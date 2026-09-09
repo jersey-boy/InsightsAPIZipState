@@ -1,0 +1,55 @@
+View: Zip State Federal District  (id=c7f541b2-87db-4fad-97c5-2e532dbbe956)
+Rows: 176493   Columns: 7
+Columns: ['signup_id', 'full_name', 'registered_state', 'registered_zip_clean', 'federal_district', 'zip_state_problem', 'federal_district_problem']
+
+zip_state_problem breakdown:
+  No problem (blank): 176418
+  Problems: 75
+         38  ZIP STATE PROBLEM. ZIP NOT FOUND
+          7  ZIP STATE PROBLEM. SHOULD BE VA
+          6  ZIP STATE PROBLEM. SHOULD BE TN
+          4  ZIP STATE PROBLEM. SHOULD BE MD
+          4  ZIP STATE PROBLEM. SHOULD BE MN
+          3  ZIP STATE PROBLEM. SHOULD BE SD
+          2  ZIP STATE PROBLEM. SHOULD BE NM
+          2  ZIP STATE PROBLEM. SHOULD BE OK
+          2  ZIP STATE PROBLEM. SHOULD BE NC
+          1  ZIP STATE PROBLEM. SHOULD BE WY
+          1  ZIP STATE PROBLEM. SHOULD BE OH
+          1  ZIP STATE PROBLEM. SHOULD BE FL
+          1  ZIP STATE PROBLEM. SHOULD BE MO
+          1  ZIP STATE PROBLEM. SHOULD BE NE
+          1  ZIP STATE PROBLEM. SHOULD BE CO
+
+federal_district_problem breakdown:
+  No problem (blank): 175549
+  Problems: 944
+        909  FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+         35  FEDERAL DISTRICT PROBLEM
+
+First 20 rows:
+ signup_id              full_name registered_state  registered_zip_clean federal_district zip_state_problem                            federal_district_problem
+    707052            Morris Akoi               NY                   544              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    613822         Sascha Daoudia               NY                   544              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    774286         Cory Greenberg               MA                  1002              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    778868           Daniel kaden               MA                  1002              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    786792          Emily Johnson               MA                  1002              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    778870          Melissa Kaden               MA                  1002              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    778671       samuel Gladstone               MA                  1002              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    781983         Donald Darnell               MA                  1060              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    769936          Susan Minnich               MA                  1230              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    414143              Lori Hill               MA                  1262              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    729043           Sarah Reilly               MA                  1337              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    727416            Rachel Wall               MA                  1527              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    779352           Brett Miller               MA                  1824              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    580152 Linda Jensen-Rodriguez               MA                  1852              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    769046    Matthew Soursourian               MA                  1915              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    776364            Maddy Sloan               MA                  1944              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    580953        Richard Blotner               MA                  2035              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    773328             Sara Knapp               MA                  2116              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    763862         Christine Eyre               MA                  2118              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+    767355              Meg Kiley               MA                  2135              NaN                   FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK
+
+Saved full data to zip_state_federal_district.csv (176493 rows).
+Saved problem rows to zip_state_federal_district_problems.csv (1010 rows).
+STATUS: OK
