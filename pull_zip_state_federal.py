@@ -23,7 +23,13 @@ VIEW_ID = "c7f541b2-87db-4fad-97c5-2e532dbbe956"
 VIEW_NAME = "Zip State Federal District"
 OUTPUT_CSV = "zip_state_federal_district.csv"
 PROBLEMS_CSV = "zip_state_federal_district_problems.csv"
+OUTPUT_XLSX = "zip_state_federal_district.xlsx"
+PROBLEMS_XLSX = "zip_state_federal_district_problems.xlsx"
 ZIP_STATE_LOOKUP = "zip_state_lookup.csv"
+
+# Column that holds the ZIP; written as zero-padded text for universal CSV
+# readers, and typed as text in the .xlsx so Excel keeps the leading zeros.
+ZIP_COLUMN = "registered_zip_clean"
 
 pd.set_option("display.max_columns", None)
 pd.set_option("display.width", None)
@@ -36,6 +42,21 @@ def _write_status(lines: list[str]) -> None:
     """Write status/preview to a workspace file (terminal capture is flaky here)."""
     with open(STATUS_FILE, "w") as fh:
         fh.write("\n".join(lines) + "\n")
+
+
+def _write_xlsx_zip_as_text(frame: pd.DataFrame, path: str) -> None:
+    """Write a DataFrame to .xlsx, forcing the ZIP column to Excel text format.
+
+    Excel shows the ZIP with its leading zeros natively (no ="..." trick and no
+    manual import step) because the cells are typed as text ("@" number format).
+    """
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="data")
+        worksheet = writer.sheets["data"]
+        # +1 because openpyxl columns are 1-indexed; header is row 1.
+        zip_col_idx = list(frame.columns).index(ZIP_COLUMN) + 1
+        for row in range(2, len(frame) + 2):
+            worksheet.cell(row=row, column=zip_col_idx).number_format = "@"
 
 
 def main() -> None:
@@ -107,6 +128,19 @@ def main() -> None:
         # drop it so it doesn't appear in the output files.
         df = df.drop(columns=["fed_dist_prefix"])
 
+        # Format the ZIP as zero-padded 5-digit TEXT (e.g. 1002 -> "01002").
+        # This is the universal form: text editors, Sublime, Google Sheets and
+        # pandas all show the leading zeros correctly. Excel-on-double-click
+        # would still coerce plain text to a number, which is why we also emit
+        # an .xlsx below with this column explicitly typed as text.
+        # (Runs AFTER both validation checks, which use the numeric value.)
+        def _pad_zip(value: object) -> object:
+            if pd.isna(value):
+                return value
+            return f"{int(value):05d}"
+
+        df[ZIP_COLUMN] = df[ZIP_COLUMN].map(_pad_zip)
+
         lines.append(f"View: {VIEW_NAME}  (id={VIEW_ID})")
         lines.append(f"Rows: {len(df)}   Columns: {len(df.columns)}")
         lines.append(f"Columns: {list(df.columns)}")
@@ -132,18 +166,26 @@ def main() -> None:
         lines.append("First 20 rows:")
         lines.append(df.head(20).to_string(index=False))
 
-        df.to_csv(OUTPUT_CSV, index=False)
-        lines.append("")
-        lines.append(f"Saved full data to {OUTPUT_CSV} ({len(df)} rows).")
-
-        # Second file: only the problem transactions. A row is a problem if
-        # either check flagged it (i.e. its problem field is non-blank).
+        # Problems-only subset: any row flagged by either check (non-blank).
         problems = df[
             (df["zip_state_problem"] != "")
             | (df["federal_district_problem"] != "")
         ]
+
+        # Full dataset: universal CSV + Excel-friendly XLSX.
+        df.to_csv(OUTPUT_CSV, index=False)
+        _write_xlsx_zip_as_text(df, OUTPUT_XLSX)
+        lines.append("")
+        lines.append(f"Saved full data ({len(df)} rows):")
+        lines.append(f"  {OUTPUT_CSV}   (universal, ZIP as text 01002)")
+        lines.append(f"  {OUTPUT_XLSX}  (Excel, ZIP column typed as text)")
+
+        # Problems-only: universal CSV + Excel-friendly XLSX.
         problems.to_csv(PROBLEMS_CSV, index=False)
-        lines.append(f"Saved problem rows to {PROBLEMS_CSV} ({len(problems)} rows).")
+        _write_xlsx_zip_as_text(problems, PROBLEMS_XLSX)
+        lines.append(f"Saved problem rows ({len(problems)} rows):")
+        lines.append(f"  {PROBLEMS_CSV}")
+        lines.append(f"  {PROBLEMS_XLSX}")
         lines.append("STATUS: OK")
     except Exception as exc:  # noqa: BLE001 - surface any error to the status file
         import traceback

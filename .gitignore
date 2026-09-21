@@ -19,6 +19,7 @@ dist/
 
 # Data / output
 *.csv
+*.xlsx
 !data_sources.example.csv
 
 # IDE
