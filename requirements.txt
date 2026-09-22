@@ -2,3 +2,8 @@ tableau-api-lib==0.1.45
 pandas==2.2.2
 python-dotenv==1.0.1
 openpyxl==3.1.5
+
+# For local S3 uploads / presigned URLs. Already present in the AWS Lambda
+# runtime, so it does not need to be packaged for deployment — it is listed
+# here only so local runs (OUTPUT to S3) work.
+boto3==1.35.49

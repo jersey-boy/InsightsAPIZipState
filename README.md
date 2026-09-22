@@ -62,6 +62,23 @@ explicit, e.g. `ZIP STATE PROBLEM. SHOULD BE VA`,
 `ZIP STATE PROBLEM. ZIP IS BLANK`, `ZIP STATE PROBLEM. ZIP NOT FOUND`,
 `FEDERAL DISTRICT PROBLEM`, `FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK`.
 
+### Output location and S3 upload
+
+By default the files are written to the current directory. Two optional
+environment variables (see `.env.example`) change this:
+
+- `OUTPUT_DIR` — directory to write into. Defaults to `.`; set it to `/tmp` when
+  running in AWS Lambda (the only writable path there).
+- `S3_BUCKET` (+ optional `S3_PREFIX`, `S3_REGION`) — when set, every output file
+  is uploaded to `s3://<bucket>/<prefix>/<filename>` and a **presigned download
+  URL** is printed for each (valid up to 7 days; tune with
+  `PRESIGN_EXPIRY_SECONDS`). When unset, output stays local only.
+
+No AWS keys are configured in this project: locally `boto3` uses your AWS
+profile/environment, and in Lambda it uses the function's IAM execution role.
+`boto3` is listed in `requirements.txt` for local use; it ships in the Lambda
+runtime already, so it does not need to be packaged for deployment.
+
 ## ZIP reference file
 
 > For a deep dive on the reference file layout and what every error message

@@ -13,6 +13,8 @@ Run:
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 from tableau_api_lib.utils.querying import get_view_data_dataframe
 
@@ -21,6 +23,20 @@ from nb_insights import insights_connection
 # The "Zip State Federal District" view (from reports_views.csv).
 VIEW_ID = "c7f541b2-87db-4fad-97c5-2e532dbbe956"
 VIEW_NAME = "Zip State Federal District"
+
+# Where output files are written. Defaults to the current directory for local
+# runs; set OUTPUT_DIR to "/tmp" in Lambda (the only writable path there).
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
+
+# Optional S3 upload. When S3_BUCKET is set, every output file is uploaded to
+# s3://<bucket>/<prefix>/<filename> and a presigned download URL is generated.
+# When it is unset (the default), the script only writes local files. In Lambda
+# these come from function env vars; locally they can come from .env.
+S3_BUCKET = os.getenv("S3_BUCKET", "")
+S3_PREFIX = os.getenv("S3_PREFIX", "")  # e.g. "zip-state-reports/"
+S3_REGION = os.getenv("S3_REGION", "")  # optional; boto3 default region if unset
+# Presigned URL lifetime in seconds (default 7 days; S3's max is 7 days).
+PRESIGN_EXPIRY_SECONDS = int(os.getenv("PRESIGN_EXPIRY_SECONDS", str(7 * 24 * 3600)))
 
 # Full dataset (every record, both problem-flag columns).
 OUTPUT_CSV = "zip_state_federal_district.csv"
@@ -86,10 +102,43 @@ pd.set_option("display.width", None)
 STATUS_FILE = "pull_zip_state_federal.status.txt"
 
 
+def _out(filename: str) -> str:
+    """Resolve an output filename against OUTPUT_DIR, creating the dir if needed."""
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return os.path.join(OUTPUT_DIR, filename)
+
+
 def _write_status(lines: list[str]) -> None:
     """Write status/preview to a workspace file (terminal capture is flaky here)."""
-    with open(STATUS_FILE, "w") as fh:
+    with open(_out(STATUS_FILE), "w") as fh:
         fh.write("\n".join(lines) + "\n")
+
+
+def upload_to_s3(paths: list[str]) -> list[str]:
+    """Upload each local file to S3 and return a presigned URL per file.
+
+    No-op returning [] when S3_BUCKET is unset. Uses the ambient AWS credentials
+    (an IAM role in Lambda, or the local AWS profile/env when run on a laptop),
+    so no keys are handled here.
+    """
+    if not S3_BUCKET:
+        return []
+
+    import boto3  # imported lazily so local runs without S3 don't need it
+
+    s3 = boto3.client("s3", region_name=S3_REGION or None)
+    prefix = S3_PREFIX.strip("/")
+    urls: list[str] = []
+    for path in paths:
+        key = f"{prefix}/{os.path.basename(path)}" if prefix else os.path.basename(path)
+        s3.upload_file(path, S3_BUCKET, key)
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=PRESIGN_EXPIRY_SECONDS,
+        )
+        urls.append(url)
+    return urls
 
 
 def build_zip_to_state(mode: str = ZIP_MODE) -> dict[int, str]:
@@ -250,32 +299,56 @@ def main() -> None:
             columns=["zip_state_problem"]
         )
 
+        # Collect every file we write so we can (optionally) upload them to S3.
+        written: list[str] = []
+
         # Full dataset: universal CSV + Excel-friendly XLSX (keeps both flags).
-        df.to_csv(OUTPUT_CSV, index=False)
-        _write_xlsx_zip_as_text(df, OUTPUT_XLSX)
+        full_csv, full_xlsx = _out(OUTPUT_CSV), _out(OUTPUT_XLSX)
+        df.to_csv(full_csv, index=False)
+        _write_xlsx_zip_as_text(df, full_xlsx)
+        written += [full_csv, full_xlsx]
         lines.append("")
         lines.append(f"Saved full data ({len(df)} rows):")
-        lines.append(f"  {OUTPUT_CSV}   (universal, ZIP as text 01002)")
-        lines.append(f"  {OUTPUT_XLSX}  (Excel, ZIP column typed as text)")
+        lines.append(f"  {full_csv}   (universal, ZIP as text 01002)")
+        lines.append(f"  {full_xlsx}  (Excel, ZIP column typed as text)")
 
         # Test 1 report — ZIP / state problems only.
-        zip_state_problems.to_csv(ZIP_STATE_PROBLEMS_CSV, index=False)
-        _write_xlsx_zip_as_text(zip_state_problems, ZIP_STATE_PROBLEMS_XLSX)
+        zs_csv, zs_xlsx = _out(ZIP_STATE_PROBLEMS_CSV), _out(ZIP_STATE_PROBLEMS_XLSX)
+        zip_state_problems.to_csv(zs_csv, index=False)
+        _write_xlsx_zip_as_text(zip_state_problems, zs_xlsx)
+        written += [zs_csv, zs_xlsx]
         lines.append("")
         lines.append(
             f"Saved ZIP/state problems ({len(zip_state_problems)} rows):"
         )
-        lines.append(f"  {ZIP_STATE_PROBLEMS_CSV}")
-        lines.append(f"  {ZIP_STATE_PROBLEMS_XLSX}")
+        lines.append(f"  {zs_csv}")
+        lines.append(f"  {zs_xlsx}")
 
         # Test 2 report — federal district / state problems only.
-        fed_district_problems.to_csv(FED_DISTRICT_PROBLEMS_CSV, index=False)
-        _write_xlsx_zip_as_text(fed_district_problems, FED_DISTRICT_PROBLEMS_XLSX)
+        fd_csv = _out(FED_DISTRICT_PROBLEMS_CSV)
+        fd_xlsx = _out(FED_DISTRICT_PROBLEMS_XLSX)
+        fed_district_problems.to_csv(fd_csv, index=False)
+        _write_xlsx_zip_as_text(fed_district_problems, fd_xlsx)
+        written += [fd_csv, fd_xlsx]
         lines.append(
             f"Saved federal district problems ({len(fed_district_problems)} rows):"
         )
-        lines.append(f"  {FED_DISTRICT_PROBLEMS_CSV}")
-        lines.append(f"  {FED_DISTRICT_PROBLEMS_XLSX}")
+        lines.append(f"  {fd_csv}")
+        lines.append(f"  {fd_xlsx}")
+
+        # Optional: upload to S3 and emit presigned download URLs.
+        if S3_BUCKET:
+            urls = upload_to_s3(written)
+            days = PRESIGN_EXPIRY_SECONDS / 86400
+            lines.append("")
+            lines.append(
+                f"Uploaded {len(urls)} file(s) to "
+                f"s3://{S3_BUCKET}/{S3_PREFIX.strip('/')} "
+                f"(presigned URLs valid ~{days:g} day(s)):"
+            )
+            for url in urls:
+                lines.append(f"  {url}")
+
         lines.append("STATUS: OK")
     except Exception as exc:  # noqa: BLE001 - surface any error to the status file
         import traceback
