@@ -32,9 +32,10 @@ a one-shot extract-and-validate.
  │  views, sources  │            │  + write output CSVs      │
  └──────────────────┘            └───────────────────────────┘
                                         │            │
-                     zip_state_lookup.csv            ▼
-                                        │   zip_state_federal_district.csv
-                                        └─> zip_state_federal_district_problems.csv
+                 ZIP_Locale_Detail.xlsx             ▼
+                 (Detail+Unique+Other)   │   zip_state_federal_district.csv/.xlsx
+                                         ├─> zip_state_problems.csv/.xlsx
+                                         └─> federal_district_problems.csv/.xlsx
 ```
 
 ## Components
@@ -72,7 +73,9 @@ Pipeline:
 5. **Federal district check** — see below.
 6. **Drop `fed_dist_prefix`** — used only for the test, removed before output
    (Requirement 5.5).
-7. **Write** — full CSV, then a filtered problems-only CSV.
+7. **Write** — full annotated dataset (CSV + XLSX), then two separate
+   problems reports: one for the ZIP/state test and one for the federal
+   district test (each CSV + XLSX).
 8. **Report** — write a run summary to `pull_zip_state_federal.status.txt` and
    stdout.
 
@@ -80,7 +83,10 @@ Pipeline:
 
 ### ZIP / state check
 
-- Build a `{zip:int -> state:str}` dictionary from `zip_state_lookup.csv`.
+- Build a `{zip:int -> state:str}` dictionary from `ZIP_Locale_Detail.xlsx`,
+  merging the `Detail`, `Unique`, and `Other` sheets (`Detail` wins on
+  conflicts). The ZIP key is the delivery ZIP or physical ZIP per `ZIP_MODE`
+  (default `delivery`). See `ZIP_REFERENCE_AND_ERRORS.md` for the full layout.
 - ZIP values on both sides are coerced to integers. This deliberately normalizes
   leading-zero ZIPs: the view stores `registered_zip_clean` numerically (e.g.
   `1002`), and the lookup is numeric too, so `1002` on both sides match — the
@@ -103,16 +109,27 @@ Pipeline:
 ### Why blanks mean "passed"
 
 Per the current requirement, a passing check leaves the field empty rather than
-writing "OK". This keeps the problems-only file easy to define (any non-blank
-flag) and makes the full file easy to scan for populated cells.
+writing "OK". This keeps each problems report easy to define (rows where that
+test's flag is non-blank) and makes the full file easy to scan for populated
+cells.
 
 ## Output
 
-- **`zip_state_federal_district.csv`** — all records; columns: `signup_id`,
-  `full_name`, `registered_state`, `registered_zip_clean`, `federal_district`,
-  `zip_state_problem`, `federal_district_problem`.
-- **`zip_state_federal_district_problems.csv`** — same columns; only rows where
-  `zip_state_problem` or `federal_district_problem` is non-blank.
+Each file is written as both a universal CSV and an Excel-friendly XLSX (the ZIP
+column is typed as text so Excel keeps leading zeros).
+
+- **`zip_state_federal_district.csv` / `.xlsx`** — all records; columns:
+  `signup_id`, `full_name`, `registered_state`, `registered_zip_clean`,
+  `federal_district`, `zip_state_problem`, `federal_district_problem`.
+- **`zip_state_problems.csv` / `.xlsx`** (Test 1) — only rows where
+  `zip_state_problem` is non-blank; carries that flag and drops
+  `federal_district_problem`.
+- **`federal_district_problems.csv` / `.xlsx`** (Test 2) — only rows where
+  `federal_district_problem` is non-blank; carries that flag and drops
+  `zip_state_problem`.
+
+The two problem reports are independent, so a record failing both checks appears
+in both files.
 
 ## Error handling
 

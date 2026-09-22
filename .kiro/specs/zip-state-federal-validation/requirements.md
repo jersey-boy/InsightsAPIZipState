@@ -21,7 +21,7 @@ them.
 
 - **Signup** — a member/person record, identified by `signup_id`.
 - **Insights view** — a Tableau view (sheet) published in NationBuilder Insights.
-- **ZIP lookup** — a reference file (`zip_state_lookup.csv`) mapping ZIP code to
+- **ZIP lookup** — a reference workbook (`ZIP_Locale_Detail.xlsx`) mapping ZIP code to
   the correct state code.
 - **Federal district prefix** (`fed_dist_prefix`) — the two-letter state code
   embedded in a federal district assignment (e.g. district `AK0` has prefix `AK`).
@@ -110,17 +110,21 @@ wrong state.
 
 ### Requirement 6 — Output files
 
-**User Story:** As a data steward, I want a full annotated file and a
-problems-only file, so that I can review everything or focus on the failures.
+**User Story:** As a data steward, I want a full annotated file plus a separate
+problems report for each test, so that I can review everything or focus on the
+failures of one specific check at a time.
 
 #### Acceptance Criteria
 
-1. WHEN validation completes THEN the tool SHALL write a full CSV of all records
+1. WHEN validation completes THEN the tool SHALL write a full file of all records
    with both problem fields populated.
-2. WHEN validation completes THEN the tool SHALL write a second CSV containing
-   only records where at least one problem field is non-blank.
-3. WHEN either file is written THEN both SHALL use the same column layout,
-   excluding `fed_dist_prefix`.
+2. WHEN validation completes THEN the tool SHALL write a separate problems report
+   per test: one containing only records where `zip_state_problem` is non-blank,
+   and one containing only records where `federal_district_problem` is non-blank.
+3. WHEN a per-test problems report is written THEN it SHALL carry that test's
+   flag column and exclude the other test's flag column (and `fed_dist_prefix`).
+4. WHEN any output file is written THEN it SHALL be produced as both a CSV and an
+   Excel-friendly XLSX (ZIP column typed as text to preserve leading zeros).
 
 ### Requirement 7 — Run visibility
 

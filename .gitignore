@@ -22,6 +22,9 @@ dist/
 *.xlsx
 !data_sources.example.csv
 
+# Run artifact — regenerated each run and contains member names (PII).
+pull_zip_state_federal.status.txt
+
 # IDE
 .vscode/
 .idea/

@@ -1,8 +1,12 @@
 # Tasks — Zip / State / Federal District Validation
 
 Implementation plan. Checked items are already built and verified against the
-live Insights site (176,493 records pulled; 75 ZIP/state problems, 944 federal
-district problems, 1,010 combined problem rows).
+live Insights site. Latest run: 177,923 records pulled; 90 ZIP/state problems,
+976 federal district problems, reported in two separate files (see task 7).
+
+ZIP → state validation now uses the USPS `ZIP_Locale_Detail.xlsx` workbook
+(sheets `Detail` + `Unique` + `Other` merged), keyed by delivery ZIP by default
+(`ZIP_MODE`). This superseded the original single-file `zip_state_lookup.csv`.
 
 - [x] 1. Project scaffolding and secrets handling
   - Create `.env`, `.env.example`, `.gitignore`, `requirements.txt`.
@@ -31,7 +35,9 @@ district problems, 1,010 combined problem rows).
     - _Requirements: 3.1, 3.2_
 
 - [x] 5. ZIP / state validation
-  - [x] 5.1 Build integer-keyed `zip -> state` lookup from `zip_state_lookup.csv`.
+  - [x] 5.1 Build integer-keyed `zip -> state` lookup from `ZIP_Locale_Detail.xlsx`
+        (merging the `Detail`, `Unique`, and `Other` sheets; `Detail` wins on
+        conflicts). Keyed by delivery or physical ZIP via `ZIP_MODE`.
     - _Requirements: 4.1, 4.2_
   - [x] 5.2 Compute result with precedence: blank ZIP, not found, match (blank),
         mismatch (`SHOULD BE <state>`).
@@ -45,10 +51,13 @@ district problems, 1,010 combined problem rows).
   - [x] 6.3 Drop `fed_dist_prefix` before writing outputs.
     - _Requirements: 5.5_
 
-- [x] 7. Output files
-  - [x] 7.1 Write full annotated CSV (`zip_state_federal_district.csv`).
+- [x] 7. Output files (CSV + Excel-friendly XLSX for each)
+  - [x] 7.1 Write full annotated dataset with both flags
+        (`zip_state_federal_district.csv` / `.xlsx`).
     - _Requirements: 6.1, 6.3_
-  - [x] 7.2 Write problems-only CSV (`zip_state_federal_district_problems.csv`).
+  - [x] 7.2 Write two separate problems reports, one per test:
+        `zip_state_problems.csv` / `.xlsx` (ZIP/state flag) and
+        `federal_district_problems.csv` / `.xlsx` (federal district flag).
     - _Requirements: 6.2, 6.3_
 
 - [x] 8. Run visibility
@@ -63,16 +72,19 @@ district problems, 1,010 combined problem rows).
   - Move `VIEW_ID` and output filenames to CLI args or `.env` so the same tool
     can validate other views without editing source.
 
-- [ ] 10. Optional ZIP formatting
-  - Add an option to zero-pad `registered_zip_clean` to 5 digits in the output
-    (display concern only; the integer match already handles comparison).
+- [x] 10. Optional ZIP formatting
+  - Done: output CSVs zero-pad `registered_zip_clean` to 5-digit text
+    (e.g. `01002`), and the XLSX files type that column as text so Excel keeps
+    the leading zeros.
 
 - [ ] 11. Automated tests
   - Add unit tests for `_zip_state_result` and `_federal_district_result` using
     small in-memory fixtures (match, mismatch, blank, not-found cases).
   - _Note: add only if the team wants regression coverage._
 
-- [ ] 12. Confirm handling of "ZIP NOT FOUND"
-  - Decide whether ZIPs missing from the lookup should stay flagged as-is,
-    be treated as passing, or use a different message. Current behavior:
-    flagged as `ZIP STATE PROBLEM. ZIP NOT FOUND`.
+- [x] 12. Confirm handling of "ZIP NOT FOUND"
+  - Decided: keep the `ZIP STATE PROBLEM. ZIP NOT FOUND` message. Investigation
+    showed the remaining not-found ZIPs are placeholder / unassigned values
+    (e.g. `20000`), not non-US/APO, so a special "non-US" message would be
+    misleading. Merging the `Unique`/`Other` sheets already resolved ~195 valid
+    ZIPs that the `Detail` sheet alone was missing.
