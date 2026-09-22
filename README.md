@@ -116,6 +116,15 @@ against that physical state — the mode only changes which ZIP column is the ke
 Full requirements, design, and tasks live in
 `.kiro/specs/zip-state-federal-validation/`.
 
+## Running as an AWS Lambda
+
+`pull_zip_state_federal.handler` is the Lambda entry point. It writes outputs to
+`/tmp`, uploads them to S3, and returns presigned download URLs. Build the
+deployment zip with `python build_lambda_zip.py` (bundles the non-pandas deps as
+Linux wheels; pandas/numpy come from the AWS-managed pandas layer). See
+**[`DEPLOY.md`](DEPLOY.md)** for the full step-by-step (IAM, Secrets Manager,
+layer ARN, scheduling); a container-image path is included there as a fallback.
+
 ## Notes
 
 - Requires the `ZIP_Locale_Detail.xlsx` reference workbook alongside the scripts

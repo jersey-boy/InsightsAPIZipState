@@ -19,6 +19,7 @@ Typical usage:
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import contextmanager
 from typing import Iterator
@@ -28,6 +29,33 @@ from tableau_api_lib import TableauServerConnection
 
 # Load variables from `.env` into the environment (no-op if file is absent).
 load_dotenv()
+
+
+def _load_secret_into_env() -> None:
+    """Populate NB_INSIGHTS_* env vars from AWS Secrets Manager, if configured.
+
+    When NB_INSIGHTS_SECRET_ID is set (a secret name or ARN), the secret's JSON
+    value is read and each key copied into os.environ *without* overwriting an
+    existing variable. This means local `.env`/shell values still win, and in
+    Lambda the secret supplies the credentials — especially the token secret,
+    which should not live in plain function env vars.
+
+    A no-op when NB_INSIGHTS_SECRET_ID is unset, so local runs are unaffected.
+    """
+    secret_id = os.getenv("NB_INSIGHTS_SECRET_ID")
+    if not secret_id:
+        return
+
+    import boto3  # lazy; only needed when a secret is configured
+
+    region = os.getenv("NB_INSIGHTS_SECRET_REGION") or os.getenv("AWS_REGION")
+    client = boto3.client("secretsmanager", region_name=region or None)
+    raw = client.get_secret_value(SecretId=secret_id)["SecretString"]
+    for key, value in json.loads(raw).items():
+        os.environ.setdefault(key, str(value))
+
+
+_load_secret_into_env()
 
 
 class MissingCredentialsError(RuntimeError):

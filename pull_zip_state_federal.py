@@ -59,6 +59,12 @@ FED_DISTRICT_PROBLEMS_XLSX = "federal_district_problems.xlsx"
 # single-entity ZIPs) that live on Unique/Other, so we merge all three.
 ZIP_STATE_LOOKUP = "ZIP_Locale_Detail.xlsx"
 
+# Optionally source the reference workbook from S3. When ZIP_LOOKUP_S3_URI is
+# set (e.g. "s3://my-bucket/refs/ZIP_Locale_Detail.xlsx"), it is downloaded to
+# OUTPUT_DIR at runtime and used in place of a bundled local copy. This keeps
+# the ~4 MB file out of the deployment package. Unset -> use the local file.
+ZIP_LOOKUP_S3_URI = os.getenv("ZIP_LOOKUP_S3_URI", "")
+
 # Which ZIP/state pair to validate against. Set ZIP_MODE to "physical" or
 # "delivery". The workbook only carries a physical state, so delivery mode
 # validates against that physical state, keyed by the delivery ZIP.
@@ -141,7 +147,33 @@ def upload_to_s3(paths: list[str]) -> list[str]:
     return urls
 
 
-def build_zip_to_state(mode: str = ZIP_MODE) -> dict[int, str]:
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split an s3://bucket/key URI into (bucket, key)."""
+    without_scheme = uri[len("s3://") :]
+    bucket, _, key = without_scheme.partition("/")
+    return bucket, key
+
+
+def resolve_reference_file() -> str:
+    """Return the local path to the ZIP reference workbook.
+
+    When ZIP_LOOKUP_S3_URI is set, download it into OUTPUT_DIR and return that
+    path; otherwise return the bundled/local ZIP_STATE_LOOKUP filename as-is.
+    """
+    if not ZIP_LOOKUP_S3_URI:
+        return ZIP_STATE_LOOKUP
+
+    import boto3  # lazy; only needed when sourcing the reference from S3
+
+    bucket, key = _parse_s3_uri(ZIP_LOOKUP_S3_URI)
+    local_path = _out(os.path.basename(key) or ZIP_STATE_LOOKUP)
+    boto3.client("s3", region_name=S3_REGION or None).download_file(
+        bucket, key, local_path
+    )
+    return local_path
+
+
+def build_zip_to_state(reference_file: str, mode: str = ZIP_MODE) -> dict[int, str]:
     """Build a {zip -> state} lookup from all three sheets of the reference.
 
     `mode` selects which ZIP column keys the lookup ("physical" or "delivery").
@@ -153,7 +185,7 @@ def build_zip_to_state(mode: str = ZIP_MODE) -> dict[int, str]:
     # Iterate Detail first so its mappings take precedence via setdefault.
     for sheet, cols in ZIP_LOOKUP_SHEETS.items():
         frame = pd.read_excel(
-            ZIP_STATE_LOOKUP, sheet_name=sheet, header=cols["header"]
+            reference_file, sheet_name=sheet, header=cols["header"]
         )
         zips = pd.to_numeric(frame[cols[zip_key]], errors="coerce")
         states = frame[cols["state"]].astype(str).str.strip().str.upper()
@@ -178,9 +210,18 @@ def _write_xlsx_zip_as_text(frame: pd.DataFrame, path: str) -> None:
             worksheet.cell(row=row, column=zip_col_idx).number_format = "@"
 
 
-def main() -> None:
+def run() -> dict:
+    """Run the full pipeline: pull, validate, write files, optionally upload.
+
+    Returns a result dict describing the run (status, row/problem counts, the
+    files written, and any presigned URLs). Never raises: failures are captured
+    in the returned dict and the status file, so a Lambda gets a clean response.
+    """
     lines: list[str] = []
+    result: dict = {"status": "ERROR", "files": [], "presigned_urls": []}
     try:
+        reference_file = resolve_reference_file()
+
         with insights_connection() as conn:
             df = get_view_data_dataframe(conn, view_id=VIEW_ID)
 
@@ -212,7 +253,7 @@ def main() -> None:
         # Zips are matched as integers on both sides, which keeps leading-zero
         # zips consistent (the view stores registered_zip_clean as a number,
         # e.g. 1002).
-        zip_to_state = build_zip_to_state(ZIP_MODE)
+        zip_to_state = build_zip_to_state(reference_file, ZIP_MODE)
 
         def _zip_state_result(row: pd.Series) -> str:
             zip_val = pd.to_numeric(row["registered_zip_clean"], errors="coerce")
@@ -339,6 +380,7 @@ def main() -> None:
         # Optional: upload to S3 and emit presigned download URLs.
         if S3_BUCKET:
             urls = upload_to_s3(written)
+            result["presigned_urls"] = urls
             days = PRESIGN_EXPIRY_SECONDS / 86400
             lines.append("")
             lines.append(
@@ -349,16 +391,43 @@ def main() -> None:
             for url in urls:
                 lines.append(f"  {url}")
 
+        # Summary counts for the returned result (handy for a Lambda response).
+        result.update(
+            status="OK",
+            rows=int(len(df)),
+            zip_state_problems=int(len(zip_state_problems)),
+            federal_district_problems=int(len(fed_district_problems)),
+            files=written,
+        )
         lines.append("STATUS: OK")
     except Exception as exc:  # noqa: BLE001 - surface any error to the status file
         import traceback
 
+        result["error"] = repr(exc)
         lines.append("STATUS: ERROR")
         lines.append(repr(exc))
         lines.append(traceback.format_exc())
 
     _write_status(lines)
     print("\n".join(lines))
+    return result
+
+
+def main() -> None:
+    """Local entry point."""
+    run()
+
+
+def handler(event, context):  # noqa: ANN001 - Lambda signature
+    """AWS Lambda entry point.
+
+    Runs the same pipeline as `main()` but returns a JSON-serializable summary
+    (status, counts, and presigned URLs) so the caller/logs can see the outcome.
+    Set OUTPUT_DIR=/tmp on the function; /tmp is the only writable path in Lambda.
+    """
+    result = run()
+    status_code = 200 if result.get("status") == "OK" else 500
+    return {"statusCode": status_code, "result": result}
 
 
 if __name__ == "__main__":

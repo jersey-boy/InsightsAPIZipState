@@ -1,0 +1,34 @@
+# Keep the build context small and never bake secrets or data into the image.
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Reference workbook (fetched from S3 at runtime, not bundled)
+ZIP_Locale_Detail.xlsx
+
+# Generated output / run artifacts (contain member PII)
+*.csv
+*.xlsx
+pull_zip_state_federal.status.txt
+
+# Version control & IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# Docs and specs (not needed at runtime)
+*.md
+.kiro/
+
+# Python caches
+__pycache__/
+*.py[cod]
+Chat01.docx
