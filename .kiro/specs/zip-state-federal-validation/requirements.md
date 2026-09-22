@@ -51,10 +51,13 @@ hardcoded in source.
 #### Acceptance Criteria
 
 1. WHEN the tool runs THEN it SHALL fetch the view data by the view's ID.
-2. WHEN the data is retrieved THEN the tool SHALL order the columns as:
-   `signup_id`, `full_name`, `registered_state`, `registered_zip_clean`,
-   `federal_district`, followed by the two problem fields.
-3. IF the view returns unexpected extra columns THEN the tool SHALL retain them
+2. WHEN the data is retrieved THEN the tool SHALL drop personally identifying
+   columns (`full_name`) before producing any output, keeping `signup_id` as a
+   non-PII identifier for tracing records.
+3. WHEN the data is retrieved THEN the tool SHALL order the columns as:
+   `signup_id`, `registered_state`, `registered_zip_clean`, `federal_district`,
+   followed by the two problem fields.
+4. IF the view returns unexpected extra columns THEN the tool SHALL retain them
    rather than dropping data.
 
 ### Requirement 3 — Problem-flag fields

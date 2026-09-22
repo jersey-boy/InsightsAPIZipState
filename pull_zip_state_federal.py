@@ -135,11 +135,16 @@ def main() -> None:
         with insights_connection() as conn:
             df = get_view_data_dataframe(conn, view_id=VIEW_ID)
 
+        # Drop personally identifying columns before any output is produced.
+        # signup_id is kept as a non-PII identifier so flagged records can still
+        # be traced back in NationBuilder.
+        PII_COLUMNS = ["full_name"]
+        df = df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
+
         # Reorder columns for the output CSV. Any columns present in the data
         # but not listed here are appended afterwards so nothing is dropped.
         column_order = [
             "signup_id",
-            "full_name",
             "registered_state",
             "registered_zip_clean",
             "federal_district",

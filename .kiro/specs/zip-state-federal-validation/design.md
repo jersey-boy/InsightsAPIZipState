@@ -119,8 +119,9 @@ Each file is written as both a universal CSV and an Excel-friendly XLSX (the ZIP
 column is typed as text so Excel keeps leading zeros).
 
 - **`zip_state_federal_district.csv` / `.xlsx`** — all records; columns:
-  `signup_id`, `full_name`, `registered_state`, `registered_zip_clean`,
+  `signup_id`, `registered_state`, `registered_zip_clean`,
   `federal_district`, `zip_state_problem`, `federal_district_problem`.
+  (`full_name` is dropped as PII; `signup_id` remains as a non-PII identifier.)
 - **`zip_state_problems.csv` / `.xlsx`** (Test 1) — only rows where
   `zip_state_problem` is non-blank; carries that flag and drops
   `federal_district_problem`.
