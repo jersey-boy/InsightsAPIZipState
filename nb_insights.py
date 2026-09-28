@@ -46,12 +46,38 @@ def _load_secret_into_env() -> None:
     if not secret_id:
         return
 
+    import base64
+
     import boto3  # lazy; only needed when a secret is configured
 
     region = os.getenv("NB_INSIGHTS_SECRET_REGION") or os.getenv("AWS_REGION")
     client = boto3.client("secretsmanager", region_name=region or None)
-    raw = client.get_secret_value(SecretId=secret_id)["SecretString"]
-    for key, value in json.loads(raw).items():
+    response = client.get_secret_value(SecretId=secret_id)
+
+    # A secret may arrive as a string or as base64 binary; handle both.
+    raw = response.get("SecretString")
+    if raw is None and response.get("SecretBinary") is not None:
+        raw = base64.b64decode(response["SecretBinary"]).decode("utf-8")
+
+    if not raw or not raw.strip():
+        raise RuntimeError(
+            f"Secret '{secret_id}' returned an empty value; expected a JSON "
+            f"object of NB_INSIGHTS_* keys."
+        )
+
+    # Strip a UTF-8 BOM if the secret was stored with one (some editors/tools
+    # prepend \ufeff, which would otherwise break json.loads at char 0).
+    raw = raw.lstrip("\ufeff")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Secret '{secret_id}' is not valid JSON ({exc}). It must be a JSON "
+            f"object whose keys are the NB_INSIGHTS_* variable names."
+        ) from exc
+
+    for key, value in data.items():
         os.environ.setdefault(key, str(value))
 
 

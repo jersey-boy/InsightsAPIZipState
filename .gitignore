@@ -29,6 +29,9 @@ pull_zip_state_federal.status.txt
 build/
 lambda_deploy.zip
 
+# Lambda invoke output — contains presigned URLs with temporary tokens.
+aws/response.json
+
 # IDE
 .vscode/
 .idea/

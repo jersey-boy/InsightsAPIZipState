@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeTargetFunction",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": [
+        "arn:aws:lambda:eu-west-2:068238656047:function:zipstatefed-validation",
+        "arn:aws:lambda:eu-west-2:068238656047:function:zipstatefed-validation:*"
+      ]
+    }
+  ]
+}

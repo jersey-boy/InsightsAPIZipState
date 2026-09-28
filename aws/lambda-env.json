@@ -1,0 +1,11 @@
+{
+  "Variables": {
+    "OUTPUT_DIR": "/tmp",
+    "S3_BUCKET": "zipstatefed-reports-068238656047",
+    "S3_PREFIX": "zip-state-reports/",
+    "S3_REGION": "eu-west-2",
+    "ZIP_LOOKUP_S3_URI": "s3://zipstatefed-reports-068238656047/refs/ZIP_Locale_Detail.xlsx",
+    "NB_INSIGHTS_SECRET_ID": "nb/insights/prod",
+    "NB_INSIGHTS_SECRET_REGION": "eu-west-2"
+  }
+}
