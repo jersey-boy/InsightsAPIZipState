@@ -25,6 +25,17 @@
         "s3:PutObject"
       ],
       "Resource": "arn:aws:s3:::zipstatefed-reports-068238656047/*"
+    },
+    {
+      "Sid": "SendEmail",
+      "Effect": "Allow",
+      "Action": "ses:SendEmail",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ses:FromAddress": "insights-reports@lategothikdata.com"
+        }
+      }
     }
   ]
 }

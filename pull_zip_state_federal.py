@@ -38,6 +38,17 @@ S3_REGION = os.getenv("S3_REGION", "")  # optional; boto3 default region if unse
 # Presigned URL lifetime in seconds (default 7 days; S3's max is 7 days).
 PRESIGN_EXPIRY_SECONDS = int(os.getenv("PRESIGN_EXPIRY_SECONDS", str(7 * 24 * 3600)))
 
+# Optional email notification via Amazon SES. When SES_SENDER is set (a verified
+# SES identity, e.g. "insights-reports@lategothikdata.com") AND a recipient list
+# is available, the presigned download links are emailed after upload.
+# Recipients come from a plain-text file (one address per line, "#" comments),
+# sourced either from S3 (RECIPIENTS_S3_URI) or a local path (RECIPIENTS_FILE).
+# All email is skipped when SES_SENDER is unset, so local runs are unaffected.
+SES_SENDER = os.getenv("SES_SENDER", "")
+SES_REGION = os.getenv("SES_REGION", "") or S3_REGION
+RECIPIENTS_S3_URI = os.getenv("RECIPIENTS_S3_URI", "")
+RECIPIENTS_FILE = os.getenv("RECIPIENTS_FILE", "recipients.txt")
+
 # Full dataset (every record, both problem-flag columns).
 OUTPUT_CSV = "zip_state_federal_district.csv"
 OUTPUT_XLSX = "zip_state_federal_district.xlsx"
@@ -152,6 +163,82 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     without_scheme = uri[len("s3://") :]
     bucket, _, key = without_scheme.partition("/")
     return bucket, key
+
+
+def load_recipients() -> list[str]:
+    """Return the list of email recipients from S3 or a local text file.
+
+    The file is one address per line; blank lines and lines starting with "#"
+    are ignored. Prefers RECIPIENTS_S3_URI when set, else RECIPIENTS_FILE.
+    Returns [] if no source is available (which disables email).
+    """
+    text = ""
+    if RECIPIENTS_S3_URI:
+        import boto3  # lazy
+
+        bucket, key = _parse_s3_uri(RECIPIENTS_S3_URI)
+        obj = boto3.client("s3", region_name=S3_REGION or None).get_object(
+            Bucket=bucket, Key=key
+        )
+        text = obj["Body"].read().decode("utf-8")
+    elif os.path.exists(RECIPIENTS_FILE):
+        with open(RECIPIENTS_FILE, encoding="utf-8") as fh:
+            text = fh.read()
+
+    recipients = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            recipients.append(line)
+    return recipients
+
+
+def notify_by_email(urls: list[str], summary: dict) -> list[str]:
+    """Email the presigned download links via SES. Returns the recipients sent to.
+
+    No-op returning [] when SES_SENDER is unset or the recipient list is empty,
+    so local runs and un-configured deploys are unaffected. The email carries the
+    summary counts and the download links only — never the member data itself.
+    """
+    if not SES_SENDER:
+        return []
+    recipients = load_recipients()
+    if not recipients:
+        return []
+
+    import boto3  # lazy
+
+    subject = "ZIP / State / Federal District validation report"
+    body_lines = [
+        "The nightly validation run has completed.",
+        "",
+        f"Records processed:            {summary.get('rows', 'n/a')}",
+        f"ZIP / state problems:         {summary.get('zip_state_problems', 'n/a')}",
+        f"Federal district problems:    {summary.get('federal_district_problems', 'n/a')}",
+        "",
+        f"Download links (valid ~{PRESIGN_EXPIRY_SECONDS / 86400:g} days):",
+    ]
+    for url in urls:
+        # Label each link by its file name for readability.
+        name = url.split("?", 1)[0].rsplit("/", 1)[-1]
+        body_lines.append(f"  {name}:")
+        body_lines.append(f"    {url}")
+    body_lines += [
+        "",
+        "These files contain member PII. Do not forward the links.",
+    ]
+    body = "\n".join(body_lines)
+
+    ses = boto3.client("ses", region_name=SES_REGION or None)
+    ses.send_email(
+        Source=SES_SENDER,
+        Destination={"ToAddresses": recipients},
+        Message={
+            "Subject": {"Data": subject},
+            "Body": {"Text": {"Data": body}},
+        },
+    )
+    return recipients
 
 
 def resolve_reference_file() -> str:
@@ -399,6 +486,18 @@ def run() -> dict:
             federal_district_problems=int(len(fed_district_problems)),
             files=written,
         )
+
+        # Optional: email the presigned links (requires S3 upload + SES config).
+        if S3_BUCKET and SES_SENDER:
+            emailed = notify_by_email(result["presigned_urls"], result)
+            result["emailed_to"] = emailed
+            if emailed:
+                lines.append("")
+                lines.append(f"Emailed report links to: {', '.join(emailed)}")
+            else:
+                lines.append("")
+                lines.append("Email skipped (no recipients found).")
+
         lines.append("STATUS: OK")
     except Exception as exc:  # noqa: BLE001 - surface any error to the status file
         import traceback
