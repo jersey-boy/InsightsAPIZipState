@@ -1,90 +1,203 @@
 # Tasks — Zip / State / Federal District Validation
 
-Implementation plan. Checked items are already built and verified against the
-live Insights site. Latest run: 177,923 records pulled; 90 ZIP/state problems,
-976 federal district problems, reported in two separate files (see task 7).
+Implementation history, grouped into phases. Each task notes **what** was done,
+**why**, and **how**, plus how it was verified. Checked items are built and
+verified against the live Insights site and (for the AWS phases) the live AWS
+account `068238656047` in `eu-west-2`.
 
-ZIP → state validation now uses the USPS `ZIP_Locale_Detail.xlsx` workbook
-(sheets `Detail` + `Unique` + `Other` merged), keyed by delivery ZIP by default
-(`ZIP_MODE`). This superseded the original single-file `zip_state_lookup.csv`.
+Current run figures (delivery mode, three-sheet reference): ~178,073 records;
+~91 ZIP/state problems, ~989 federal district problems, reported in two separate
+files. (Counts drift slightly run-to-run as the live data changes.)
+
+---
+
+## Phase 1 — Local validation tool
 
 - [x] 1. Project scaffolding and secrets handling
-  - Create `.env`, `.env.example`, `.gitignore`, `requirements.txt`.
-  - Ensure `.env` and output CSVs are gitignored.
+  - `.env`, `.env.example`, `.gitignore`, `requirements.txt`; `.env` and output
+    files gitignored.
+  - _Why:_ keep the token out of source; make first-run setup obvious.
   - _Requirements: 1.1_
 
 - [x] 2. Shared connection module (`nb_insights.py`)
   - [x] 2.1 Load `.env` and build the `tableau_api_lib` config from env vars.
-    - _Requirements: 1.1_
-  - [x] 2.2 Add `_require()` to raise `MissingCredentialsError` on missing vars.
-    - _Requirements: 1.2_
-  - [x] 2.3 Provide `insights_connection()` context manager (sign in / sign out).
-    - _Requirements: 1.3_
+  - [x] 2.2 `_require()` raises `MissingCredentialsError` on missing vars.
+  - [x] 2.3 `insights_connection()` context manager (sign in / always sign out).
+  - _Why:_ one reusable, safe connection path; guaranteed sign-out avoids stale
+    sessions. _Requirements: 1.1–1.3_
 
 - [x] 3. Content inventory app (`list_reports.py`)
-  - List workbooks, views, and data sources; write each to CSV.
-  - Used to locate the target view ID.
-  - _Requirements: (supporting)_
+  - Lists workbooks/views/data sources to CSV; used to find the target view id
+    (`c7f541b2-87db-4fad-97c5-2e532dbbe956`). _Requirements: supporting_
 
-- [x] 4. Pull the view data (`pull_zip_state_federal.py`)
-  - [x] 4.1 Fetch view data by ID (`c7f541b2-87db-4fad-97c5-2e532dbbe956`).
-    - _Requirements: 2.1_
-  - [x] 4.2 Reorder columns; append any unexpected columns to avoid data loss.
-    - _Requirements: 2.2, 2.3_
-  - [x] 4.3 Add blank `zip_state_problem` and `federal_district_problem` fields.
-    - _Requirements: 3.1, 3.2_
+- [x] 4. Pull + shape the view data (`pull_zip_state_federal.py`)
+  - [x] 4.1 Fetch by view id.
+  - [x] 4.2 Reorder columns; append unexpected columns (no data loss).
+  - [x] 4.3 Add blank `zip_state_problem` / `federal_district_problem`.
+  - _Requirements: 2, 3_
 
 - [x] 5. ZIP / state validation
-  - [x] 5.1 Build integer-keyed `zip -> state` lookup from `ZIP_Locale_Detail.xlsx`
-        (merging the `Detail`, `Unique`, and `Other` sheets; `Detail` wins on
-        conflicts). Keyed by delivery or physical ZIP via `ZIP_MODE`.
-    - _Requirements: 4.1, 4.2_
-  - [x] 5.2 Compute result with precedence: blank ZIP, not found, match (blank),
-        mismatch (`SHOULD BE <state>`).
-    - _Requirements: 4.3, 4.4, 4.5, 4.6_
+  - [x] 5.1 Build integer-keyed `zip -> state` lookup (initially from a single
+    `zip_state_lookup.csv`; later replaced — see Phase 2).
+  - [x] 5.2 Precedence: blank ZIP → not found → match (blank) → `SHOULD BE`.
+  - _Why integer keys:_ normalizes leading-zero ZIPs without string padding.
+  - _Requirements: 4_
 
 - [x] 6. Federal district validation
   - [x] 6.1 Compare `fed_dist_prefix` to `registered_state`.
-    - _Requirements: 5.1, 5.2, 5.3_
-  - [x] 6.2 Flag blank prefix with `FEDERAL DISTRICT IS BLANK` message.
-    - _Requirements: 5.4_
-  - [x] 6.3 Drop `fed_dist_prefix` before writing outputs.
-    - _Requirements: 5.5_
+  - [x] 6.2 Blank prefix → `FEDERAL DISTRICT IS BLANK`.
+  - [x] 6.3 Drop `fed_dist_prefix` before output.
+  - _Why:_ the state is already in the district code, so no reference needed.
+  - _Requirements: 5_
 
-- [x] 7. Output files (CSV + Excel-friendly XLSX for each)
-  - [x] 7.1 Write full annotated dataset with both flags
-        (`zip_state_federal_district.csv` / `.xlsx`).
-    - _Requirements: 6.1, 6.3_
-  - [x] 7.2 Write two separate problems reports, one per test:
-        `zip_state_problems.csv` / `.xlsx` (ZIP/state flag) and
-        `federal_district_problems.csv` / `.xlsx` (federal district flag).
-    - _Requirements: 6.2, 6.3_
+- [x] 7. Output + run visibility
+  - [x] 7.1 Full annotated CSV/XLSX; ZIP zero-padded (CSV) and typed as text
+    (XLSX) to preserve leading zeros.
+  - [x] 7.2 Status file with counts + problem breakdown; `STATUS: OK/ERROR`.
+  - _Why the status file:_ the dev drive's shell mangled output; a written record
+    is the reliable log. _Requirements: 6, 6a, 7_
 
-- [x] 8. Run visibility
-  - [x] 8.1 Print/save row counts, pass/fail counts, and problem breakdowns.
-    - _Requirements: 7.1_
-  - [x] 8.2 Write `STATUS: OK` / `STATUS: ERROR` (+ traceback) to a status file.
-    - _Requirements: 7.2_
+---
+
+## Phase 2 — Reference migration & accuracy
+
+- [x] 8. Switch to `ZIP_Locale_Detail.xlsx`
+  - [x] 8.1 Read the USPS workbook; add `ZIP_MODE` (delivery/physical).
+  - [x] 8.2 Investigate physical vs delivery: physical produced ~33K false
+    "ZIP NOT FOUND" (facility-ZIP coverage gap); switched default to delivery.
+  - [x] 8.3 Merge `Detail` + `Unique` + `Other` (Detail wins), handling the
+    3-row stacked header on the latter two. Recovered ~195 valid ZIPs.
+  - [x] 8.4 Decision: keep `ZIP NOT FOUND` (remaining ones are placeholder/
+    unassigned ZIPs, **not** non-US/APO — so no "non-US" message added).
+  - _How verified:_ compared member ZIPs against each sheet's coverage; not-found
+    dropped from ~33,578 → ~90. _Requirements: 8_
+
+- [x] 9. Documentation: `ZIP_REFERENCE_AND_ERRORS.md`
+  - Explains the three-sheet layout/merge, `ZIP_MODE`, and every error message.
+
+- [x] 10. Split into two per-test reports
+  - `zip_state_problems.*` and `federal_district_problems.*`, each carrying only
+    its own flag; full dataset retained with both flags.
+  - _Why:_ the checks are reviewed independently. _Requirements: 6_
+
+- [x] 11. Remove PII (`full_name`) from all outputs
+  - Dropped right after fetch; `signup_id` kept for traceability.
+  - _Requirements: 2.2_
+
+- [x] 12. Git hygiene
+  - Restored `.env.example` after it was accidentally overwritten with real
+    credentials (prevented a secret leak); untracked + gitignored the status
+    file (contains member names).
+
+---
+
+## Phase 3 — S3 output + presigned URLs
+
+- [x] 13. Configurable output location (`OUTPUT_DIR`, default `.`)
+  - All outputs + status file routed through `_out()`. _Requirements: 9.3, 10.2_
+
+- [x] 14. Optional S3 upload + presigned URLs
+  - `upload_to_s3()` gated on `S3_BUCKET`; presigned GET per file
+    (`PRESIGN_EXPIRY_SECONDS`, default 7 days). boto3 lazy-imported; credentials
+    from AWS profile locally / role in Lambda.
+  - _How verified:_ mocked boto3 (keys, one upload per file, one URL per file).
+  - _Requirements: 9_
+
+---
+
+## Phase 4 — Lambda-ready refactor
+
+- [x] 15. Handler + `run()` split
+  - Refactored `main()` into `run()` (returns result dict); added `main()` and
+    `handler(event, context)` → `{statusCode, result}`. _Requirements: 10.1, 7.3_
+
+- [x] 16. Secrets Manager loading (`nb_insights.py`)
+  - `_load_secret_into_env()` fills only-missing vars from `NB_INSIGHTS_SECRET_ID`
+    (local `.env` wins). Hardened later for the BOM bug (Phase 5). _Req: 10.3_
+
+- [x] 17. S3-sourced reference (`ZIP_LOOKUP_S3_URI`)
+  - `resolve_reference_file()` downloads to `OUTPUT_DIR` when set, else local.
+  - _Why:_ keeps the ~4 MB workbook out of the package; updatable without
+    redeploy. _Requirements: 10.2_
+
+- [x] 18. Packaging decision + build
+  - Chose zip + AWS-managed pandas layer over Docker (pandas Windows-wheel
+    problem; no Docker engine locally). `build_lambda_zip.py` installs Linux
+    wheels and prunes pandas/numpy → ~2.8 MB zip. `Dockerfile`/`.dockerignore`
+    kept as fallback. _How verified:_ inspected zip contents (source + deps, no
+    pandas/numpy). _Requirements: 10.4_
+
+- [x] 19. `DEPLOY.md`
+  - zip + layer as primary path; container image as appendix; later extended
+    with the SES section.
+
+---
+
+## Phase 5 — AWS deployment (eu-west-2, account 068238656047)
+
+- [x] 20. S3 bucket `zipstatefed-reports-068238656047`
+  - All four Block Public Access settings enabled (PII). _Requirements: 9.4_
+- [x] 21. Upload reference workbook to `refs/`.
+- [x] 22. Secrets Manager secret `nb/insights/prod` (built from local `.env`).
+- [x] 23. IAM execution role `zipstatefed-lambda-role`
+  - Least-privilege: scoped logs, `secretsmanager:GetSecretValue`,
+    `s3:GetObject/PutObject`, (later) scoped `ses:SendEmail`.
+- [x] 24. Pandas layer resolved:
+  `arn:aws:lambda:eu-west-2:336392948345:layer:AWSSDKPandas-Python312:31`.
+- [x] 25. Create function `zipstatefed-validation` (python3.12, 1024 MB, 300 s).
+- [x] 26. Fix the Secrets Manager **BOM bug**
+  - First invoke failed with `JSONDecodeError` at char 0: PowerShell
+    `Set-Content -Encoding utf8` wrote a UTF-8 BOM into the secret. Re-stored
+    without a BOM (.NET `UTF8Encoding($false)`) AND hardened
+    `_load_secret_into_env` (strip BOM, handle `SecretBinary`, clear errors).
+  - _How verified:_ re-invoke returned 200 OK; six files confirmed in S3.
+- [x] 27. Nightly schedule
+  - EventBridge Scheduler `zipstatefed-nightly`, `cron(0 6 * * ? *)` UTC, via
+    `zipstatefed-scheduler-role` (invoke-only).
+
+---
+
+## Phase 6 — Email notifications (Amazon SES)
+
+- [x] 28. Verify SES sender
+  - Domain `lategothikdata.com` verified via DKIM CNAMEs added to its Route 53
+    zone; sender `insights-reports@lategothikdata.com`. Recipient
+    `rick_meier@msn.com` also verified (SES sandbox).
+- [x] 29. Recipient list in S3 (`config/recipients.txt`)
+  - `load_recipients()` reads one-per-line, `#` comments, from S3 or local.
+  - _Why S3:_ manage recipients without a redeploy. _Requirements: 11.5_
+- [x] 30. `notify_by_email()`
+  - Sends counts + presigned links via SES; body carries links only, never data.
+  - _Requirements: 11.1, 11.4_
+- [x] 31. Refinements
+  - [x] 31.1 Email the **problem reports only**; full dataset uploaded to S3 but
+    not linked (`EMAIL_EXCLUDE_FILES`). _Requirements: 11.3_
+  - [x] 31.2 Configurable `EMAIL_MESSAGE`; default explains the CSV-vs-XLSX
+    leading-zero ZIP issue. _Requirements: 11.2_
+  - _How verified:_ mock (message present, full dataset excluded, 4 problem links)
+    and a live invoke (200 OK, `emailed_to: rick_meier@msn.com`).
+
+---
 
 ## Open / follow-up tasks
 
-- [ ] 9. Make the target view configurable
-  - Move `VIEW_ID` and output filenames to CLI args or `.env` so the same tool
-    can validate other views without editing source.
+- [ ] 32. SES production access
+  - Request from the SES console before adding recipients that can't be
+    individually verified (sandbox only sends to verified addresses).
 
-- [x] 10. Optional ZIP formatting
-  - Done: output CSVs zero-pad `registered_zip_clean` to 5-digit text
-    (e.g. `01002`), and the XLSX files type that column as text so Excel keeps
-    the leading zeros.
+- [ ] 33. Rotate the NationBuilder token
+  - It currently lives in the local `.env` and in Secrets Manager. If rotated,
+    update the secret with `put-secret-value` using the no-BOM approach.
 
-- [ ] 11. Automated tests
-  - Add unit tests for `_zip_state_result` and `_federal_district_result` using
-    small in-memory fixtures (match, mismatch, blank, not-found cases).
-  - _Note: add only if the team wants regression coverage._
+- [ ] 34. Deliver-ability hardening (optional)
+  - First emails from the new domain may land in spam until reputation builds;
+    consider SPF/DMARC records if wider distribution is planned.
 
-- [x] 12. Confirm handling of "ZIP NOT FOUND"
-  - Decided: keep the `ZIP STATE PROBLEM. ZIP NOT FOUND` message. Investigation
-    showed the remaining not-found ZIPs are placeholder / unassigned values
-    (e.g. `20000`), not non-US/APO, so a special "non-US" message would be
-    misleading. Merging the `Unique`/`Other` sheets already resolved ~195 valid
-    ZIPs that the `Detail` sheet alone was missing.
+- [ ] 35. Automated unit tests (optional)
+  - Fixtures for `_zip_state_result` / `_federal_district_result` (match,
+    mismatch, blank, not-found) and for the merge/BOM/email helpers. Add only if
+    the team wants regression coverage.
+
+- [ ] 36. Infrastructure-as-code (optional)
+  - The deploy is currently CLI-driven with policy JSON in `aws/`. If repeatable
+    environments are needed, port to SAM/CDK/Terraform.
