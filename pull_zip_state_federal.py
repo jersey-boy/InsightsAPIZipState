@@ -49,6 +49,20 @@ SES_REGION = os.getenv("SES_REGION", "") or S3_REGION
 RECIPIENTS_S3_URI = os.getenv("RECIPIENTS_S3_URI", "")
 RECIPIENTS_FILE = os.getenv("RECIPIENTS_FILE", "recipients.txt")
 
+# Free-text message included in the email body (between the counts and the
+# links). Override with the EMAIL_MESSAGE env var; the default explains why both
+# CSV and XLSX versions are provided (the leading-zero ZIP issue). Set to an
+# empty string to omit the message entirely.
+DEFAULT_EMAIL_MESSAGE = (
+    "Each report is provided as both a CSV and an XLSX file. This is because of "
+    "ZIP codes with leading zeros (e.g. 01002). The CSV stores the ZIP as text "
+    "so the leading zero is preserved everywhere (text editors, Google Sheets, "
+    "pandas), but Excel will strip it if you open the CSV directly. The XLSX "
+    "version types the ZIP column as text so Excel keeps the leading zero. Use "
+    "the XLSX in Excel; the CSV is the universal form for everything else."
+)
+EMAIL_MESSAGE = os.getenv("EMAIL_MESSAGE", DEFAULT_EMAIL_MESSAGE)
+
 # Full dataset (every record, both problem-flag columns).
 OUTPUT_CSV = "zip_state_federal_district.csv"
 OUTPUT_XLSX = "zip_state_federal_district.xlsx"
@@ -193,12 +207,20 @@ def load_recipients() -> list[str]:
     return recipients
 
 
+# Files uploaded to S3 for reference but NOT linked in the notification email.
+# The full dataset is large and not needed for the day-to-day problem review;
+# only the two problem reports are emailed.
+EMAIL_EXCLUDE_FILES = {OUTPUT_CSV, OUTPUT_XLSX}
+
+
 def notify_by_email(urls: list[str], summary: dict) -> list[str]:
     """Email the presigned download links via SES. Returns the recipients sent to.
 
     No-op returning [] when SES_SENDER is unset or the recipient list is empty,
     so local runs and un-configured deploys are unaffected. The email carries the
     summary counts and the download links only — never the member data itself.
+    The full-dataset files (EMAIL_EXCLUDE_FILES) are uploaded to S3 but omitted
+    from the email; only the problem reports are linked.
     """
     if not SES_SENDER:
         return []
@@ -208,6 +230,13 @@ def notify_by_email(urls: list[str], summary: dict) -> list[str]:
 
     import boto3  # lazy
 
+    # Keep only the links whose file name isn't in the exclude set.
+    email_urls = [
+        url
+        for url in urls
+        if url.split("?", 1)[0].rsplit("/", 1)[-1] not in EMAIL_EXCLUDE_FILES
+    ]
+
     subject = "ZIP / State / Federal District validation report"
     body_lines = [
         "The nightly validation run has completed.",
@@ -215,16 +244,21 @@ def notify_by_email(urls: list[str], summary: dict) -> list[str]:
         f"Records processed:            {summary.get('rows', 'n/a')}",
         f"ZIP / state problems:         {summary.get('zip_state_problems', 'n/a')}",
         f"Federal district problems:    {summary.get('federal_district_problems', 'n/a')}",
-        "",
-        f"Download links (valid ~{PRESIGN_EXPIRY_SECONDS / 86400:g} days):",
     ]
-    for url in urls:
+    if EMAIL_MESSAGE.strip():
+        body_lines += ["", EMAIL_MESSAGE.strip()]
+    body_lines += [
+        "",
+        f"Problem report download links (valid ~{PRESIGN_EXPIRY_SECONDS / 86400:g} days):",
+    ]
+    for url in email_urls:
         # Label each link by its file name for readability.
         name = url.split("?", 1)[0].rsplit("/", 1)[-1]
         body_lines.append(f"  {name}:")
         body_lines.append(f"    {url}")
     body_lines += [
         "",
+        "The full dataset is available in S3 for reference but is not linked here.",
         "These files contain member PII. Do not forward the links.",
     ]
     body = "\n".join(body_lines)

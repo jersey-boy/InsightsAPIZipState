@@ -237,6 +237,88 @@ use an EventBridge rule with `aws events put-rule` + `aws lambda add-permission`
 
 ---
 
+## 10. Email the report links (optional, Amazon SES)
+
+When `SES_SENDER` is set and a recipient list exists, the function emails the
+presigned download links after upload. The email includes the summary counts, a
+free-text message, and links to the **problem reports only** — the full dataset
+(`zip_state_federal_district.csv/.xlsx`) is uploaded to S3 but not linked. The
+email never contains member data, only links.
+
+### 10.1 Verify a sender identity
+
+SES requires a verified sender. A domain identity gives the best deliverability;
+if the domain is in Route 53, SES can add the DKIM records for you:
+
+```bash
+# Create the domain identity (returns 3 DKIM tokens):
+aws sesv2 create-email-identity --email-identity YOUR_DOMAIN --region eu-west-2
+
+# For each token, add a CNAME to the hosted zone:
+#   <token>._domainkey.YOUR_DOMAIN  ->  <token>.dkim.amazonses.com
+# (via aws route53 change-resource-record-sets). Verification completes
+# automatically once the records propagate:
+aws sesv2 get-email-identity --email-identity YOUR_DOMAIN --region eu-west-2 \
+  --query "{Verified:VerifiedForSendingStatus, DKIM:DkimAttributes.Status}"
+```
+
+The sender address (`SES_SENDER`) can be any address on the verified domain
+(e.g. `insights-reports@YOUR_DOMAIN`); no mailbox is required to send.
+
+### 10.2 Sandbox vs. production
+
+New SES accounts are in the **sandbox**: you can only send *to* verified
+addresses. Check with:
+
+```bash
+aws sesv2 get-account --region eu-west-2 --query "ProductionAccessEnabled"
+```
+
+- While in the sandbox, verify each recipient too:
+  `aws sesv2 create-email-identity --email-identity someone@example.com`
+  (they click the confirmation link AWS emails them).
+- To send to arbitrary recipients, request production access from the SES
+  console (Account dashboard -> "Request production access"; ~24h to approve).
+
+### 10.3 Recipient list
+
+The list is a plain-text file (one address per line, `#` for comments) in S3:
+
+```bash
+aws s3 cp recipients.txt s3://YOUR_BUCKET/config/recipients.txt
+```
+
+Edit that S3 object to change who gets emailed — no redeploy needed.
+
+### 10.4 IAM + env vars
+
+Add `ses:SendEmail` to the execution role, scoped to the from-address (already
+included in `aws/permissions-policy.json`):
+
+```json
+{
+  "Sid": "SendEmail",
+  "Effect": "Allow",
+  "Action": "ses:SendEmail",
+  "Resource": "*",
+  "Condition": { "StringEquals": { "ses:FromAddress": "insights-reports@YOUR_DOMAIN" } }
+}
+```
+
+Add these to the function environment (see `aws/lambda-env.json`):
+
+```
+SES_SENDER=insights-reports@YOUR_DOMAIN
+SES_REGION=eu-west-2
+RECIPIENTS_S3_URI=s3://YOUR_BUCKET/config/recipients.txt
+```
+
+Optional `EMAIL_MESSAGE` overrides the default body message (which explains why
+both CSV and XLSX are provided — the leading-zero ZIP issue). Leave it unset to
+use that default; set it to an empty string to omit the message.
+
+---
+
 ## Appendix: container image
 
 If you prefer a container image (e.g. dependencies grow, or you want exact
