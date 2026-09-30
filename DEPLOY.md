@@ -208,12 +208,14 @@ A success looks like:
 ```json
 {"statusCode": 200, "result": {"status": "OK", "rows": 178073,
  "zip_state_problems": 91, "federal_district_problems": 989,
- "presigned_urls": ["https://YOUR_BUCKET.s3..."]}}
+ "presigned_urls": ["https://YOUR_BUCKET.s3..."],
+ "emailed_to": ["someone@example.com"]}}
 ```
 
-The presigned URLs are the shareable download links (valid up to 7 days; tune
-with `PRESIGN_EXPIRY_SECONDS`). Errors are returned with `statusCode: 500` and an
-`error` field, and the full traceback is in CloudWatch Logs.
+`presigned_urls` are per-object download links kept in the result for reference
+(the dated S3 objects; valid up to 7 days). `emailed_to` lists who received the
+attachment email. Errors are returned with `statusCode: 500` and an `error`
+field, and the full traceback is in CloudWatch Logs.
 
 ---
 
@@ -240,10 +242,22 @@ use an EventBridge rule with `aws events put-rule` + `aws lambda add-permission`
 ## 10. Email the report links (optional, Amazon SES)
 
 When `SES_SENDER` is set and a recipient list exists, the function emails the
-presigned download links after upload. The email includes the summary counts, a
-free-text message, and links to the **problem reports only** — the full dataset
-(`zip_state_federal_district.csv/.xlsx`) is uploaded to S3 but not linked. The
-email never contains member data, only links.
+two **problem reports as file attachments** (dated names) after the run. The
+email includes the summary counts and a free-text message. The full dataset
+(`zip_state_federal_district_*.csv/.xlsx`) is uploaded to S3 but **never
+attached**. An attachment is skipped (with a note in the body) if it would push
+the message past the SES ~10 MB limit. Email is independent of S3 — attachments
+are read from the local output files.
+
+> S3 object names are date-stamped with the run date
+> (e.g. `zip_state_problems_YYYYMMDD.csv`) so a history accumulates in the
+> bucket. Local file names stay undated.
+
+> **Alternative (retained):** an earlier version emailed presigned S3 *links*
+> instead of attachments. That path is preserved in `_build_link_email()` in
+> `pull_zip_state_federal.py` (not called). To switch back, build the body with
+> that helper and send via `ses.send_email` using the presigned URLs from
+> `upload_to_s3()`.
 
 ### 10.1 Verify a sender identity
 
@@ -299,7 +313,7 @@ included in `aws/permissions-policy.json`):
 {
   "Sid": "SendEmail",
   "Effect": "Allow",
-  "Action": "ses:SendEmail",
+  "Action": ["ses:SendEmail", "ses:SendRawEmail"],
   "Resource": "*",
   "Condition": { "StringEquals": { "ses:FromAddress": "insights-reports@YOUR_DOMAIN" } }
 }

@@ -179,6 +179,26 @@ files. (Counts drift slightly run-to-run as the live data changes.)
 
 ---
 
+## Phase 7 — Attachments + dated S3 history
+
+- [x] 37. Date-stamp S3 objects (`YYYYMMDD`, UTC)
+  - `RUN_DATE` + `_dated_name()`; `upload_to_s3` writes dated object names so a
+    history accumulates. Local file names stay undated.
+  - _Why:_ keep every run's reports, not just the latest. _Requirements: 9.2_
+
+- [x] 38. Email problem reports as attachments (not links)
+  - Rewrote `notify_by_email` to build a `MIMEMultipart` and send via
+    `ses.send_raw_email`, attaching the two problem reports (dated names);
+    excludes the full dataset; skips any attachment over `SES_MAX_ATTACH_BYTES`
+    with a note in the body. Email decoupled from S3 (attaches local files).
+  - Added `ses:SendRawEmail` to the IAM policy.
+  - Kept `_build_link_email()` as the documented, unused link alternative.
+  - _How verified:_ mock (4 dated attachments, full dataset excluded, message
+    present, link alt callable) and a live invoke (200 OK, emailed_to set, dated
+    objects present in S3). _Requirements: 11.1–11.5_
+
+---
+
 ## Open / follow-up tasks
 
 - [ ] 32. SES production access

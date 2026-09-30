@@ -291,21 +291,26 @@ them without direct file access.
 #### Acceptance Criteria
 
 1. WHEN `S3_BUCKET` is configured THEN the tool SHALL upload each output file to
-   `s3://<bucket>/<prefix>/<filename>`.
-2. WHEN a file is uploaded THEN the tool SHALL generate a presigned GET URL for
+   `s3://<bucket>/<prefix>/<name>`.
+2. WHEN uploading THEN the tool SHALL date-stamp each S3 object name with the run
+   date in `YYYYMMDD` format (e.g. `zip_state_problems_20260929.csv`), so a
+   history of runs accumulates in the bucket. Local file names remain undated.
+3. WHEN a file is uploaded THEN the tool SHALL generate a presigned GET URL for
    it, with a configurable expiry (`PRESIGN_EXPIRY_SECONDS`, default 7 days —
-   S3's maximum).
-3. WHEN `S3_BUCKET` is unset THEN the tool SHALL write files locally only and
+   S3's maximum), retained in the run result for reference.
+4. WHEN `S3_BUCKET` is unset THEN the tool SHALL write files locally only and
    perform no upload (so local runs are unaffected).
-4. WHEN the bucket is created THEN it SHALL have all S3 Block Public Access
+5. WHEN the bucket is created THEN it SHALL have all S3 Block Public Access
    settings enabled (the reports contain member PII).
 
 **Rationale:** S3 is the natural sink for a Lambda and needs no credentials
-beyond the execution role. Presigned URLs let recipients download without an AWS
-account while keeping the bucket private and letting access self-expire. Block
-Public Access is mandatory because the files contain member ZIPs/states; the
-public web must never be able to read them. Making the whole feature a no-op when
-`S3_BUCKET` is unset keeps the same code runnable on a laptop.
+beyond the execution role. Date-stamping builds a durable history — each nightly
+run leaves its own dated objects rather than overwriting, so past reports can be
+compared. Presigned URLs are still generated (kept in the result, and used by the
+retained link-email alternative). Block Public Access is mandatory because the
+files contain member ZIPs/states; the public web must never be able to read them.
+Making the whole feature a no-op when `S3_BUCKET` is unset keeps the same code
+runnable on a laptop.
 
 ---
 
@@ -347,28 +352,37 @@ automatically, so that I don't have to go looking for the output after each run.
 #### Acceptance Criteria
 
 1. WHEN `SES_SENDER` is set and a recipient list is available THEN the tool SHALL
-   email the presigned download links via Amazon SES after upload.
+   email the problem reports as **file attachments** via Amazon SES after the run
+   (using a raw MIME message).
 2. WHEN emailing THEN the tool SHALL include the summary counts and a
    configurable free-text message (`EMAIL_MESSAGE`) in the body.
-3. WHEN emailing THEN the tool SHALL link the **problem reports only**; the full
-   dataset files SHALL be uploaded to S3 but NOT linked in the email.
-4. WHEN emailing THEN the body SHALL contain links and counts only — never the
-   member data itself.
-5. WHEN the recipient list is read THEN it SHALL come from a plain-text file (one
+3. WHEN emailing THEN the tool SHALL attach the **problem reports only**; the full
+   dataset files SHALL be uploaded to S3 but NOT attached.
+4. WHEN emailing THEN the body SHALL contain counts and a message only — never
+   inline member data — and attachments SHALL be named with the run date.
+5. WHEN an attachment would push the message past the SES size limit (~10 MB)
+   THEN the tool SHALL skip it and note the omission in the body rather than fail.
+6. WHEN the recipient list is read THEN it SHALL come from a plain-text file (one
    address per line, `#` comments) sourced from S3 (`RECIPIENTS_S3_URI`) or a
    local file (`RECIPIENTS_FILE`), so recipients can be managed without a
    redeploy.
-6. WHEN `SES_SENDER` is unset or the recipient list is empty THEN the tool SHALL
-   send no email (no-op).
+7. WHEN `SES_SENDER` is unset or the recipient list is empty THEN the tool SHALL
+   send no email (no-op). Email SHALL NOT require S3 (attachments come from the
+   local output files).
 
-**Rationale:** The nightly run is unattended, so pushing links to people is more
-useful than leaving them in a log. The full dataset is large and not needed for
-day-to-day review, so only the problem reports are linked (the full files still
-land in S3 for reference). Keeping the body to links-plus-counts, never data,
-limits how far PII travels by email. The recipient list is an S3 text file so it
-can grow over time by editing one object — no code change or redeploy. The
-configurable `EMAIL_MESSAGE` currently explains why both CSV and XLSX are
-provided (the leading-zero ZIP issue from Requirement 6a).
+**Rationale:** Attachments let recipients open the reports directly from their
+inbox, with no link to click or expiry to worry about — simpler for the small,
+known audience. Only the problem reports are attached: the full dataset is large
+(and would exceed the SES 10 MB limit), so it is uploaded to S3 for reference but
+never attached. The size guard means a future data spike degrades gracefully
+(skip + note) instead of failing the send. The recipient list stays an S3 text
+file so it can grow by editing one object. The configurable `EMAIL_MESSAGE`
+currently explains why both CSV and XLSX are provided (the leading-zero ZIP issue
+from Requirement 6a).
+
+**Alternative retained:** an earlier version emailed presigned S3 *links* instead
+of attachments. That path is preserved (unused) as `_build_link_email()` for an
+easy switch back.
 
 ---
 

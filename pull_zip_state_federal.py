@@ -14,6 +14,7 @@ Run:
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import pandas as pd
 from tableau_api_lib.utils.querying import get_view_data_dataframe
@@ -139,6 +140,23 @@ def _out(filename: str) -> str:
     return os.path.join(OUTPUT_DIR, filename)
 
 
+# Run date (UTC) used to stamp S3 object names and email attachments so a
+# history accumulates in S3 (e.g. zip_state_problems_20260928.csv). Computed
+# once per process so every file in a run shares the same stamp.
+RUN_DATE = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+
+def _dated_name(filename: str) -> str:
+    """Insert the run date before the extension: foo.csv -> foo_YYYYMMDD.csv."""
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}_{RUN_DATE}{ext}"
+
+
+# SES caps a message (headers + body + attachments) at 10 MB, and base64
+# encoding inflates attachments ~37%, so keep a conservative raw-bytes budget.
+SES_MAX_ATTACH_BYTES = 7_000_000
+
+
 def _write_status(lines: list[str]) -> None:
     """Write status/preview to a workspace file (terminal capture is flaky here)."""
     with open(_out(STATUS_FILE), "w") as fh:
@@ -161,7 +179,10 @@ def upload_to_s3(paths: list[str]) -> list[str]:
     prefix = S3_PREFIX.strip("/")
     urls: list[str] = []
     for path in paths:
-        key = f"{prefix}/{os.path.basename(path)}" if prefix else os.path.basename(path)
+        # Date-stamp the S3 object name so a history builds up in the bucket
+        # (the local file keeps its plain name; only the S3 key is dated).
+        object_name = _dated_name(os.path.basename(path))
+        key = f"{prefix}/{object_name}" if prefix else object_name
         s3.upload_file(path, S3_BUCKET, key)
         url = s3.generate_presigned_url(
             "get_object",
@@ -213,32 +234,12 @@ def load_recipients() -> list[str]:
 EMAIL_EXCLUDE_FILES = {OUTPUT_CSV, OUTPUT_XLSX}
 
 
-def notify_by_email(urls: list[str], summary: dict) -> list[str]:
-    """Email the presigned download links via SES. Returns the recipients sent to.
+EMAIL_SUBJECT = "ZIP / State / Federal District validation report"
 
-    No-op returning [] when SES_SENDER is unset or the recipient list is empty,
-    so local runs and un-configured deploys are unaffected. The email carries the
-    summary counts and the download links only — never the member data itself.
-    The full-dataset files (EMAIL_EXCLUDE_FILES) are uploaded to S3 but omitted
-    from the email; only the problem reports are linked.
-    """
-    if not SES_SENDER:
-        return []
-    recipients = load_recipients()
-    if not recipients:
-        return []
 
-    import boto3  # lazy
-
-    # Keep only the links whose file name isn't in the exclude set.
-    email_urls = [
-        url
-        for url in urls
-        if url.split("?", 1)[0].rsplit("/", 1)[-1] not in EMAIL_EXCLUDE_FILES
-    ]
-
-    subject = "ZIP / State / Federal District validation report"
-    body_lines = [
+def _email_body(summary: dict, attached: list[str], skipped: list[str]) -> str:
+    """Compose the plain-text email body (counts + message + attachment notes)."""
+    lines = [
         "The nightly validation run has completed.",
         "",
         f"Records processed:            {summary.get('rows', 'n/a')}",
@@ -246,33 +247,119 @@ def notify_by_email(urls: list[str], summary: dict) -> list[str]:
         f"Federal district problems:    {summary.get('federal_district_problems', 'n/a')}",
     ]
     if EMAIL_MESSAGE.strip():
-        body_lines += ["", EMAIL_MESSAGE.strip()]
-    body_lines += [
+        lines += ["", EMAIL_MESSAGE.strip()]
+    if attached:
+        lines += ["", "Attached problem reports:"]
+        lines += [f"  {name}" for name in attached]
+    if skipped:
+        lines += [
+            "",
+            "Not attached (too large for email; available in S3):",
+        ]
+        lines += [f"  {name}" for name in skipped]
+    lines += [
+        "",
+        "The full dataset is not attached; it is available in S3 for reference.",
+        "These files contain member PII. Do not forward this email.",
+    ]
+    return "\n".join(lines)
+
+
+def notify_by_email(files: list[str], summary: dict) -> list[str]:
+    """Email the problem-report files as attachments via SES. Returns recipients.
+
+    No-op returning [] when SES_SENDER is unset or the recipient list is empty,
+    so local runs and un-configured deploys are unaffected. Only the problem
+    reports are attached (the full dataset, EMAIL_EXCLUDE_FILES, is uploaded to
+    S3 but never emailed). Attachments are named with the run date and skipped
+    (with a note in the body) if they would push the message past the SES size
+    limit. The email body carries counts + message only — never inline data.
+
+    NOTE: an earlier version emailed presigned S3 *links* instead of
+    attachments. That approach is preserved in `_build_link_email()` below in
+    case we want to switch back; it is not called.
+    """
+    if not SES_SENDER:
+        return []
+    recipients = load_recipients()
+    if not recipients:
+        return []
+
+    from email.mime.application import MIMEApplication
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    import boto3  # lazy
+
+    # Attach the problem reports only, within the SES size budget.
+    attach_paths = [
+        p for p in files if os.path.basename(p) not in EMAIL_EXCLUDE_FILES
+    ]
+    attached_names: list[str] = []
+    skipped_names: list[str] = []
+    total = 0
+    parts: list[MIMEApplication] = []
+    for path in attach_paths:
+        size = os.path.getsize(path)
+        dated = _dated_name(os.path.basename(path))
+        if total + size > SES_MAX_ATTACH_BYTES:
+            skipped_names.append(dated)
+            continue
+        with open(path, "rb") as fh:
+            part = MIMEApplication(fh.read())
+        part.add_header("Content-Disposition", "attachment", filename=dated)
+        parts.append(part)
+        attached_names.append(dated)
+        total += size
+
+    msg = MIMEMultipart()
+    msg["Subject"] = EMAIL_SUBJECT
+    msg["From"] = SES_SENDER
+    msg["To"] = ", ".join(recipients)
+    msg.attach(MIMEText(_email_body(summary, attached_names, skipped_names)))
+    for part in parts:
+        msg.attach(part)
+
+    ses = boto3.client("ses", region_name=SES_REGION or None)
+    ses.send_raw_email(
+        Source=SES_SENDER,
+        Destinations=recipients,
+        RawMessage={"Data": msg.as_string()},
+    )
+    return recipients
+
+
+def _build_link_email(urls: list[str], summary: dict) -> tuple[str, str]:
+    """ALTERNATIVE (not currently used): body for emailing presigned links.
+
+    Kept for easy revert to the link-based notification. Returns (subject, body).
+    To use, replace the send in notify_by_email() with ses.send_email() using
+    this body, passing the presigned URLs from upload_to_s3(). Links exclude the
+    full-dataset files the same way attachments do.
+    """
+    email_urls = [
+        url
+        for url in urls
+        if url.split("?", 1)[0].rsplit("/", 1)[-1] not in EMAIL_EXCLUDE_FILES
+    ]
+    lines = [
+        "The nightly validation run has completed.",
+        "",
+        f"Records processed:            {summary.get('rows', 'n/a')}",
+        f"ZIP / state problems:         {summary.get('zip_state_problems', 'n/a')}",
+        f"Federal district problems:    {summary.get('federal_district_problems', 'n/a')}",
+    ]
+    if EMAIL_MESSAGE.strip():
+        lines += ["", EMAIL_MESSAGE.strip()]
+    lines += [
         "",
         f"Problem report download links (valid ~{PRESIGN_EXPIRY_SECONDS / 86400:g} days):",
     ]
     for url in email_urls:
-        # Label each link by its file name for readability.
         name = url.split("?", 1)[0].rsplit("/", 1)[-1]
-        body_lines.append(f"  {name}:")
-        body_lines.append(f"    {url}")
-    body_lines += [
-        "",
-        "The full dataset is available in S3 for reference but is not linked here.",
-        "These files contain member PII. Do not forward the links.",
-    ]
-    body = "\n".join(body_lines)
-
-    ses = boto3.client("ses", region_name=SES_REGION or None)
-    ses.send_email(
-        Source=SES_SENDER,
-        Destination={"ToAddresses": recipients},
-        Message={
-            "Subject": {"Data": subject},
-            "Body": {"Text": {"Data": body}},
-        },
-    )
-    return recipients
+        lines += [f"  {name}:", f"    {url}"]
+    lines += ["", "These files contain member PII. Do not forward the links."]
+    return EMAIL_SUBJECT, "\n".join(lines)
 
 
 def resolve_reference_file() -> str:
@@ -498,19 +585,20 @@ def run() -> dict:
         lines.append(f"  {fd_csv}")
         lines.append(f"  {fd_xlsx}")
 
-        # Optional: upload to S3 and emit presigned download URLs.
+        # Optional: upload to S3. Objects are date-stamped (YYYYMMDD) so a
+        # history accumulates in the bucket. Presigned URLs are still generated
+        # and kept in the result for reference / the alternative link email.
         if S3_BUCKET:
             urls = upload_to_s3(written)
             result["presigned_urls"] = urls
-            days = PRESIGN_EXPIRY_SECONDS / 86400
             lines.append("")
             lines.append(
-                f"Uploaded {len(urls)} file(s) to "
-                f"s3://{S3_BUCKET}/{S3_PREFIX.strip('/')} "
-                f"(presigned URLs valid ~{days:g} day(s)):"
+                f"Uploaded {len(urls)} dated file(s) to "
+                f"s3://{S3_BUCKET}/{S3_PREFIX.strip('/')} (run date {RUN_DATE}):"
             )
             for url in urls:
-                lines.append(f"  {url}")
+                # Log the object name (before the query string), not the token.
+                lines.append(f"  {url.split('?', 1)[0].rsplit('/', 1)[-1]}")
 
         # Summary counts for the returned result (handy for a Lambda response).
         result.update(
@@ -521,13 +609,14 @@ def run() -> dict:
             files=written,
         )
 
-        # Optional: email the presigned links (requires S3 upload + SES config).
-        if S3_BUCKET and SES_SENDER:
-            emailed = notify_by_email(result["presigned_urls"], result)
+        # Optional: email the problem-report files as attachments (needs SES).
+        # Independent of S3 — attachments come from the local written files.
+        if SES_SENDER:
+            emailed = notify_by_email(written, result)
             result["emailed_to"] = emailed
             if emailed:
                 lines.append("")
-                lines.append(f"Emailed report links to: {', '.join(emailed)}")
+                lines.append(f"Emailed report attachments to: {', '.join(emailed)}")
             else:
                 lines.append("")
                 lines.append("Email skipped (no recipients found).")

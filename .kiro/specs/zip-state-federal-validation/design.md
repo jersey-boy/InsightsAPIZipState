@@ -122,14 +122,21 @@ decision log for why all three sheets and why integer keys.
 ### 4. `upload_to_s3(paths)` / `notify_by_email(urls, summary)`
 
 - `upload_to_s3` — lazy-imports boto3, uploads each file to
-  `s3://S3_BUCKET/S3_PREFIX/<basename>`, and returns a presigned GET URL per
-  file (`PRESIGN_EXPIRY_SECONDS`). No-op returning `[]` when `S3_BUCKET` unset.
+  `s3://S3_BUCKET/S3_PREFIX/<dated-name>` (the object name is date-stamped via
+  `_dated_name()` so history accumulates), and returns a presigned GET URL per
+  object (`PRESIGN_EXPIRY_SECONDS`). No-op returning `[]` when `S3_BUCKET` unset.
 - `load_recipients()` — reads the recipient list from `RECIPIENTS_S3_URI` (S3) or
   `RECIPIENTS_FILE` (local), one address per line, skipping blanks and `#`.
-- `notify_by_email` — no-op unless `SES_SENDER` and recipients exist. Filters out
-  the full-dataset files (`EMAIL_EXCLUDE_FILES`) so only problem-report links are
-  sent, builds a plain-text body (counts + `EMAIL_MESSAGE` + labeled links +
-  a PII warning), and sends via `ses.send_email`.
+- `notify_by_email` — no-op unless `SES_SENDER` and recipients exist. Attaches
+  the **problem-report files** (excluding `EMAIL_EXCLUDE_FILES`, the full
+  dataset) to a raw MIME multipart message and sends via `ses.send_raw_email`.
+  Attachments use dated names; any that would exceed `SES_MAX_ATTACH_BYTES`
+  (~7 MB raw, keeping under the SES 10 MB post-encoding limit) are skipped and
+  noted in the body. The body carries counts + `EMAIL_MESSAGE` only, never inline
+  data. Independent of S3. `_build_link_email()` preserves the older
+  presigned-link body as a documented, unused alternative.
+- `_dated_name(filename)` — inserts `RUN_DATE` (UTC `YYYYMMDD`, computed once per
+  process) before the extension: `foo.csv` -> `foo_YYYYMMDD.csv`.
 
 ## Decision log — why it is built this way
 
@@ -198,9 +205,29 @@ wins so the same code runs both places.
 
 ### Why email problem reports only
 
-The full dataset is large and rarely needed for day-to-day review; linking it in
-every email adds noise and spreads more PII. It is still uploaded to S3 for
-reference, but the email links only the two problem reports.
+The full dataset is large and rarely needed for day-to-day review; attaching it
+in every email adds weight and spreads more PII, and it would exceed the SES
+10 MB limit. It is still uploaded to S3 for reference, but the email attaches
+only the two problem reports.
+
+### Why attachments (and why the link alternative is kept)
+
+Attachments let the small, known audience open the reports straight from their
+inbox — no link to click, no expiry to track. This needs a raw MIME message
+(`ses.send_raw_email`), so `notify_by_email` builds a `MIMEMultipart` and the
+IAM role grants `ses:SendRawEmail`. A `SES_MAX_ATTACH_BYTES` guard skips any
+attachment that would breach the SES size limit (noting it in the body) so a data
+spike degrades gracefully. The earlier presigned-link approach is retained as
+`_build_link_email()` (unused) in case the audience grows or files get large
+enough that links become preferable again.
+
+### Why date-stamp S3 objects
+
+The goal is a history of runs, not just the latest. Date-stamping each S3 object
+name (`_YYYYMMDD`, UTC, computed once per run) means nightly runs leave distinct
+objects instead of overwriting, so past reports remain available for comparison.
+Local file names stay undated so repeated local runs overwrite rather than pile
+up on a developer's disk.
 
 ## Result / error handling
 
@@ -223,8 +250,9 @@ Deployed to AWS account `068238656047`, region `eu-west-2`:
 - **Secrets Manager** `nb/insights/prod` (JSON of `NB_INSIGHTS_*`).
 - **IAM role** `zipstatefed-lambda-role`, least-privilege inline policy: scoped
   CloudWatch Logs, `secretsmanager:GetSecretValue` on the secret,
-  `s3:GetObject/PutObject` on the bucket, and `ses:SendEmail` conditioned on the
-  verified from-address.
+  `s3:GetObject/PutObject` on the bucket, and `ses:SendEmail`/`ses:SendRawEmail`
+  conditioned on the verified from-address (`SendRawEmail` is what carries the
+  attachments).
 - **Layer** `arn:aws:lambda:eu-west-2:336392948345:layer:AWSSDKPandas-Python312:31`.
 - **Function** `zipstatefed-validation` (python3.12, 1024 MB, 300 s).
 - **Schedule** EventBridge Scheduler `zipstatefed-nightly`, `cron(0 6 * * ? *)`

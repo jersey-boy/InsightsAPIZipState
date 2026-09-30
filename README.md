@@ -70,14 +70,34 @@ environment variables (see `.env.example`) change this:
 - `OUTPUT_DIR` — directory to write into. Defaults to `.`; set it to `/tmp` when
   running in AWS Lambda (the only writable path there).
 - `S3_BUCKET` (+ optional `S3_PREFIX`, `S3_REGION`) — when set, every output file
-  is uploaded to `s3://<bucket>/<prefix>/<filename>` and a **presigned download
-  URL** is printed for each (valid up to 7 days; tune with
-  `PRESIGN_EXPIRY_SECONDS`). When unset, output stays local only.
+  is uploaded to `s3://<bucket>/<prefix>/<filename>`. Object names are
+  **date-stamped** with the run date, e.g. `zip_state_problems_YYYYMMDD.csv`, so
+  a history accumulates in the bucket (local file names stay undated). A
+  presigned URL is also generated per object (valid up to 7 days; tune with
+  `PRESIGN_EXPIRY_SECONDS`) and kept in the run result. When unset, output stays
+  local only.
+
+Email delivery (see below) sends the reports as **attachments**, so S3 is not
+required for email — the two are independent.
 
 No AWS keys are configured in this project: locally `boto3` uses your AWS
 profile/environment, and in Lambda it uses the function's IAM execution role.
 `boto3` is listed in `requirements.txt` for local use; it ships in the Lambda
 runtime already, so it does not need to be packaged for deployment.
+
+### Email notification
+
+When `SES_SENDER` is set and a recipient list exists (`RECIPIENTS_S3_URI` or a
+local `RECIPIENTS_FILE`, one address per line, `#` comments), the run emails the
+two **problem reports as file attachments** via Amazon SES — the full dataset is
+never attached (it is uploaded to S3 for reference). Attachments are named with
+the run date. The body carries the summary counts and the `EMAIL_MESSAGE` note.
+An attachment is skipped (with a note in the body) if it would push the message
+past the SES ~10 MB limit. Email is a no-op unless `SES_SENDER` is set.
+
+> An earlier version emailed presigned S3 **links** instead of attachments. That
+> approach is preserved in `_build_link_email()` for easy revert (see
+> `DEPLOY.md`).
 
 ## ZIP reference file
 
