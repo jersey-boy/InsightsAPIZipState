@@ -234,7 +234,9 @@ wins so the same code runs both places.
 The full dataset is large and rarely needed for day-to-day review; attaching it
 in every email adds weight and spreads more PII, and it would exceed the SES
 10 MB limit. It is still uploaded to S3 for reference, but the email attaches
-only the two problem reports.
+only the problem reports (the two per-test reports, plus the Insights-vs-NB
+report when the cross-check is enabled) — everything in `written` except the
+full-dataset files (`EMAIL_EXCLUDE_FILES`).
 
 ### Why attachments (and why the link alternative is kept)
 

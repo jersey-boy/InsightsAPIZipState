@@ -28,7 +28,7 @@ district data integrity.
 |--------|---------|
 | `nb_insights.py` | Shared connection helper. Loads `.env`, provides `insights_connection()` context manager. Run directly for a sign-in smoke test. |
 | `list_reports.py` | Lists all Insights workbooks, views, and data sources; writes each to CSV. |
-| `pull_zip_state_federal.py` | Pulls the "Zip State Federal District" view, runs two independent checks (ZIP vs. state, federal district vs. state), and writes a full CSV plus one problems report per check. |
+| `pull_zip_state_federal.py` | Pulls the "Zip State Federal District" view, runs two independent checks (ZIP vs. state, federal district vs. state), writes the full dataset plus a problems report per check, and — when NationBuilder credentials are set — cross-checks against the NB API and writes an Insights-vs-NationBuilder discrepancy report. Also the Lambda entry point. |
 | `sources.py` | Original sample: lists data source fields. |
 
 Run any script with:
@@ -39,8 +39,9 @@ Run any script with:
 
 ## Validation output
 
-`pull_zip_state_federal.py` runs two independent checks and produces six files
-(all gitignored, as they contain member PII):
+`pull_zip_state_federal.py` runs two independent checks and produces three report
+pairs plus the full dataset — six CSV/XLSX files, or eight when the NationBuilder
+cross-check is enabled (all gitignored, as they contain member PII):
 
 **Full dataset** (every record, both problem-flag columns):
 
@@ -75,9 +76,9 @@ Run any script with:
   top-level `federal_district`. This catches discrepancies the per-test reports
   miss — e.g. a ZIP or state that disagrees between the two systems.
 
-The two problem reports are independent; a member flagged by both checks appears
-in both files. A passing check leaves the flag blank. Problem messages are
-explicit, e.g. `ZIP STATE PROBLEM. SHOULD BE VA`,
+The two per-test problem reports are independent; a member flagged by both checks
+appears in both files. A passing check leaves the flag blank. Problem messages
+are explicit, e.g. `ZIP STATE PROBLEM. SHOULD BE VA`,
 `ZIP STATE PROBLEM. ZIP IS BLANK`, `ZIP STATE PROBLEM. ZIP NOT FOUND`,
 `FEDERAL DISTRICT PROBLEM`, `FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK`.
 
@@ -108,9 +109,10 @@ runtime already, so it does not need to be packaged for deployment.
 
 When `SES_SENDER` is set and a recipient list exists (`RECIPIENTS_S3_URI` or a
 local `RECIPIENTS_FILE`, one address per line, `#` comments), the run emails the
-two **problem reports as file attachments** via Amazon SES — the full dataset is
-never attached (it is uploaded to S3 for reference). Attachments are named with
-the run date. The body carries the summary counts and the `EMAIL_MESSAGE` note.
+**problem reports as file attachments** via Amazon SES — the two per-test reports
+plus the Insights-vs-NationBuilder report when the NB cross-check is enabled. The
+full dataset is never attached (it is uploaded to S3 for reference). Attachments
+are named with the run date. The body carries the summary counts and the `EMAIL_MESSAGE` note.
 An attachment is skipped (with a note in the body) if it would push the message
 past the SES ~10 MB limit. Email is a no-op unless `SES_SENDER` is set.
 

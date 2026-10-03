@@ -190,7 +190,8 @@ Sizing notes:
 - **Timeout 900 s** (the Lambda max): the Tableau pull plus XLSX generation, and
   especially the per-flagged-id NationBuilder cross-check (~1,000 API calls, run
   in parallel), need headroom. Without the cross-check, 300 s is enough.
-- **/tmp**: the six output files total well under the 512 MB `/tmp` default.
+- **/tmp**: the output files (six, or eight with the NB cross-check) total well
+  under the 512 MB `/tmp` default.
 
 To ship code updates later:
 
