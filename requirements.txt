@@ -7,3 +7,8 @@ openpyxl==3.1.5
 # runtime, so it does not need to be packaged for deployment — it is listed
 # here only so local runs (OUTPUT to S3) work.
 boto3==1.35.49
+
+# HTTP client used by the vendored `nationbuilder` package to call the
+# NationBuilder V1 REST API (federal_district cross-check). Must be packaged
+# into the Lambda zip (it is not in the base runtime).
+httpx==0.27.2

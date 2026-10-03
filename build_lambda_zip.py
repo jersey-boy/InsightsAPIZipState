@@ -33,12 +33,16 @@ ZIP_PATH = ROOT / "lambda_deploy.zip"
 # Application source files to include at the zip root.
 SOURCE_FILES = ["nb_insights.py", "pull_zip_state_federal.py"]
 
+# Application packages (directories) to include at the zip root.
+SOURCE_PACKAGES = ["nationbuilder"]
+
 # Dependencies to bundle. pandas/numpy (managed layer) and boto3 (runtime) are
 # deliberately omitted. These are the pins from requirements.txt minus those.
 DEPENDENCIES = [
     "tableau-api-lib==0.1.45",
     "openpyxl==3.1.5",
     "python-dotenv==1.0.1",
+    "httpx==0.27.2",
 ]
 
 # Packages provided by the environment, so they must NOT be in the zip:
@@ -111,12 +115,22 @@ def build_zip() -> None:
                 continue
             if path.is_file():
                 zf.write(path, path.relative_to(BUILD_DIR))
-        # Application source at the zip root.
+        # Application source files at the zip root.
         for name in SOURCE_FILES:
             src = ROOT / name
             if not src.exists():
                 raise FileNotFoundError(f"Missing source file: {src}")
             zf.write(src, name)
+        # Application source packages (directories) at the zip root.
+        for pkg in SOURCE_PACKAGES:
+            pkg_dir = ROOT / pkg
+            if not pkg_dir.is_dir():
+                raise FileNotFoundError(f"Missing source package: {pkg_dir}")
+            for path in pkg_dir.rglob("*"):
+                if "__pycache__" in path.parts or path.suffix == ".pyc":
+                    continue
+                if path.is_file():
+                    zf.write(path, path.relative_to(ROOT))
     print(f"Wrote {ZIP_PATH}  ({ZIP_PATH.stat().st_size / 1_048_576:.1f} MB)")
 
 

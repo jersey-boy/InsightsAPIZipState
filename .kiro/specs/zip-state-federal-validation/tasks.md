@@ -199,6 +199,35 @@ files. (Counts drift slightly run-to-run as the live data changes.)
 
 ---
 
+## Phase 8 — NationBuilder federal-district cross-check
+
+- [x] 39. Vendor the NB V1 API client
+  - Copied the `nationbuilder` package from `NBGet01` (client/models/exceptions/
+    auth); added `httpx==0.27.2`; NB creds in `.env` (and the AWS secret).
+  - _Why vendor:_ reuse proven code rather than re-implement. _Requirements: 12_
+
+- [x] 40. `nb_federal_districts(signup_ids)` lookup
+  - One `get_person` per flagged id; markers for blank / NOT FOUND / LOOKUP
+    ERROR; parallelized via a thread pool (`NB_LOOKUP_CONCURRENCY`, default 10).
+  - _Why only flagged ids:_ bounds the call volume (~1,000, not ~188K).
+  - _Why parallel:_ serial ~7 min would exceed the Lambda timeout; parallel
+    ~1.6 min. _Requirements: 12.1, 12.3, 12.5_
+
+- [x] 41. Enrich the federal-district report
+  - Added `nb_federal_district` + `federal_district_match` (MATCH/MISMATCH/blank)
+    columns and a status-line summary (match/mismatch/not-comparable counts).
+  - Verified live: Insights `AK0` vs NB `PA6` flagged MISMATCH; blank-vs-blank
+    not comparable. First full run: 9 match, 54 mismatch, 926 not comparable.
+  - _Requirements: 12.2_
+
+- [x] 42. Deploy
+  - Added `NATIONBUILDER_*` to the Secrets Manager secret (no-BOM); updated
+    `build_lambda_zip.py` to bundle the `nationbuilder/` package + `httpx`;
+    raised the Lambda timeout 300 s -> 900 s. Redeployed and invoked: 200 OK,
+    cross-check columns present in the dated S3 object. _Requirements: 12_
+
+---
+
 ## Open / follow-up tasks
 
 - [ ] 32. SES production access

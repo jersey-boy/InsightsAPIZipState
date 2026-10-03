@@ -55,6 +55,14 @@ Run any script with:
 
 - `federal_district_problems.csv` / `.xlsx` — carries the
   `federal_district_problem` flag.
+- When NationBuilder credentials are configured (`NATIONBUILDER_SLUG` /
+  `NATIONBUILDER_ACCESS_TOKEN`), this report also carries two cross-check
+  columns: `nb_federal_district` (the authoritative value from the NationBuilder
+  V1 API for that `signup_id`) and `federal_district_match`
+  (`MATCH`/`MISMATCH`/blank). The Insights `federal_district` is unreliable, so
+  the NB value is looked up for each flagged record (one API call per flagged
+  `signup_id`, run in parallel) and shown side by side. The lookup is a no-op
+  when NB credentials are unset.
 
 The two problem reports are independent; a member flagged by both checks appears
 in both files. A passing check leaves the flag blank. Problem messages are

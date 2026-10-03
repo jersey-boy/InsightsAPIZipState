@@ -51,9 +51,16 @@ aws secretsmanager create-secret \
     "NB_INSIGHTS_SITE_NAME":"your-site-name",
     "NB_INSIGHTS_SITE_URL":"your-site-url",
     "NB_INSIGHTS_TOKEN_NAME":"your-token-name",
-    "NB_INSIGHTS_TOKEN_SECRET":"your-token-secret"
+    "NB_INSIGHTS_TOKEN_SECRET":"your-token-secret",
+    "NATIONBUILDER_SLUG":"your-nation-slug",
+    "NATIONBUILDER_ACCESS_TOKEN":"your-nationbuilder-api-token"
   }'
 ```
+
+The `NATIONBUILDER_*` keys enable the federal-district cross-check (the function
+loads them from this secret via `_load_secret_into_env`). Omit them to disable
+the cross-check. If stored with a tool that adds a UTF-8 BOM, write the secret
+without one (the loader strips a BOM defensively, but a clean secret is best).
 
 Note the returned secret ARN.
 
@@ -162,7 +169,7 @@ aws lambda create-function \
   --handler pull_zip_state_federal.handler \
   --zip-file fileb://lambda_deploy.zip \
   --layers arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:13 \
-  --timeout 300 \
+  --timeout 900 \
   --memory-size 1024 \
   --environment "Variables={
     OUTPUT_DIR=/tmp,
@@ -180,7 +187,9 @@ Sizing notes:
 - **Memory 1024 MB+**: the AWS SDK for pandas docs warn that <512 MB can be
   insufficient for pandas workloads; 178K rows + XLSX writing wants headroom.
   More memory also means more CPU, so it finishes faster.
-- **Timeout 300 s**: the Tableau pull plus XLSX generation takes a while.
+- **Timeout 900 s** (the Lambda max): the Tableau pull plus XLSX generation, and
+  especially the per-flagged-id NationBuilder cross-check (~1,000 API calls, run
+  in parallel), need headroom. Without the cross-check, 300 s is enough.
 - **/tmp**: the six output files total well under the 512 MB `/tmp` default.
 
 To ship code updates later:

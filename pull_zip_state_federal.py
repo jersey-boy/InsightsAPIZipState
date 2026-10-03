@@ -39,6 +39,20 @@ S3_REGION = os.getenv("S3_REGION", "")  # optional; boto3 default region if unse
 # Presigned URL lifetime in seconds (default 7 days; S3's max is 7 days).
 PRESIGN_EXPIRY_SECONDS = int(os.getenv("PRESIGN_EXPIRY_SECONDS", str(7 * 24 * 3600)))
 
+# Optional NationBuilder cross-check. The Insights "federal_district" value is
+# unreliable, so for records flagged by the federal-district test we look up the
+# authoritative value via the NationBuilder V1 API and show both side by side.
+# Enabled when both NB vars are set; otherwise the cross-check is skipped and
+# the report is produced exactly as before. The lookup only hits the API for the
+# flagged signup_ids (one GET per id), not the whole nation.
+NB_SLUG = os.getenv("NATIONBUILDER_SLUG", "")
+NB_ACCESS_TOKEN = os.getenv("NATIONBUILDER_ACCESS_TOKEN", "")
+# Concurrency for the per-id NB lookups. Each call is ~0.45s, so the flagged
+# set (~1,000 ids) is ~7 min serially; a modest thread pool brings it under a
+# minute. The NB client already retries on 429, so concurrency is safe within
+# reason. Tune via NB_LOOKUP_CONCURRENCY.
+NB_LOOKUP_CONCURRENCY = int(os.getenv("NB_LOOKUP_CONCURRENCY", "10"))
+
 # Optional email notification via Amazon SES. When SES_SENDER is set (a verified
 # SES identity, e.g. "insights-reports@lategothikdata.com") AND a recipient list
 # is available, the presigned download links are emailed after upload.
@@ -381,6 +395,50 @@ def resolve_reference_file() -> str:
     return local_path
 
 
+def nb_federal_districts(signup_ids: list[int]) -> dict[int, str]:
+    """Look up the NationBuilder federal_district for each signup id.
+
+    Returns {signup_id -> federal_district_or_marker}. The marker is "" when NB
+    has no district, "NOT FOUND" when the id doesn't exist in NationBuilder, and
+    "LOOKUP ERROR" when a call fails — so the report always has a value to show.
+    No-op returning {} when NB credentials are not configured.
+
+    Only the ids passed in (the flagged records) are queried, one GET each.
+    """
+    if not (NB_SLUG and NB_ACCESS_TOKEN) or not signup_ids:
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nationbuilder import (  # lazy; only needed for the cross-check
+        NationBuilderClient,
+        NotFoundError,
+        NationBuilderError,
+    )
+
+    # One shared client; httpx.Client is safe to use across threads.
+    client = NationBuilderClient(slug=NB_SLUG, access_token=NB_ACCESS_TOKEN)
+
+    def _one(sid: int) -> tuple[int, str]:
+        try:
+            district = client.get_person(sid).get_raw("federal_district")
+            return sid, ("" if district is None else str(district).strip())
+        except NotFoundError:
+            return sid, "NOT FOUND"
+        except NationBuilderError:
+            return sid, "LOOKUP ERROR"
+
+    result: dict[int, str] = {}
+    try:
+        workers = max(1, NB_LOOKUP_CONCURRENCY)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for sid, value in pool.map(_one, signup_ids):
+                result[sid] = value
+    finally:
+        client.close()
+    return result
+
+
 def build_zip_to_state(reference_file: str, mode: str = ZIP_MODE) -> dict[int, str]:
     """Build a {zip -> state} lookup from all three sheets of the reference.
 
@@ -547,6 +605,52 @@ def run() -> dict:
         fed_district_problems = df[df["federal_district_problem"] != ""].drop(
             columns=["zip_state_problem"]
         )
+
+        # NationBuilder cross-check: the Insights federal_district is unreliable,
+        # so for the flagged records look up the authoritative value from the NB
+        # API and show both side by side. Adds two columns:
+        #   nb_federal_district      - the value NationBuilder has for that id
+        #   federal_district_match   - MATCH / MISMATCH between Insights and NB
+        # Only runs when NB credentials are configured; otherwise the report is
+        # unchanged.
+        if NB_SLUG and NB_ACCESS_TOKEN and len(fed_district_problems) > 0:
+            flagged_ids = [
+                int(x)
+                for x in pd.to_numeric(
+                    fed_district_problems["signup_id"], errors="coerce"
+                ).dropna()
+            ]
+            nb_map = nb_federal_districts(flagged_ids)
+            fed_district_problems = fed_district_problems.copy()
+
+            def _nb_value(row: pd.Series) -> str:
+                sid = pd.to_numeric(row["signup_id"], errors="coerce")
+                if pd.isna(sid):
+                    return ""
+                return nb_map.get(int(sid), "")
+
+            def _match(row: pd.Series) -> str:
+                insights = str(row["federal_district"]).strip().upper()
+                nb = str(row["nb_federal_district"]).strip().upper()
+                # Don't label a comparison when NB couldn't be read.
+                if nb in ("", "NOT FOUND", "LOOKUP ERROR"):
+                    return ""
+                return "MATCH" if insights == nb else "MISMATCH"
+
+            fed_district_problems["nb_federal_district"] = fed_district_problems.apply(
+                _nb_value, axis=1
+            )
+            fed_district_problems["federal_district_match"] = (
+                fed_district_problems.apply(_match, axis=1)
+            )
+            lines.append("")
+            mm = int((fed_district_problems["federal_district_match"] == "MISMATCH").sum())
+            ma = int((fed_district_problems["federal_district_match"] == "MATCH").sum())
+            lines.append(
+                f"NationBuilder cross-check (flagged ids): "
+                f"{ma} match, {mm} mismatch, "
+                f"{len(fed_district_problems) - ma - mm} not comparable."
+            )
 
         # Collect every file we write so we can (optionally) upload them to S3.
         written: list[str] = []

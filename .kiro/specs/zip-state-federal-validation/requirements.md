@@ -386,6 +386,42 @@ easy switch back.
 
 ---
 
+### Requirement 12 — NationBuilder federal-district cross-check
+
+**User Story:** As a data steward, I want the federal district of each flagged
+record checked against the authoritative NationBuilder value, so that I can see
+where the (unreliable) Insights value is wrong rather than trusting it blindly.
+
+#### Acceptance Criteria
+
+1. WHEN `NATIONBUILDER_SLUG` and `NATIONBUILDER_ACCESS_TOKEN` are set THEN the
+   tool SHALL, for each record flagged by the federal-district test, look up that
+   `signup_id`'s `federal_district` via the NationBuilder V1 API.
+2. WHEN the cross-check runs THEN the federal-district report SHALL gain two
+   columns: `nb_federal_district` (the NB value, or a marker: blank when NB has
+   none, `NOT FOUND` when the id is absent, `LOOKUP ERROR` on failure) and
+   `federal_district_match` (`MATCH`/`MISMATCH`, or blank when not comparable).
+3. WHEN querying NB THEN the tool SHALL only call the API for the flagged
+   `signup_id`s (not the whole nation), one call per id, run concurrently
+   (`NB_LOOKUP_CONCURRENCY`, default 10).
+4. WHEN NB credentials are unset THEN the cross-check SHALL be skipped and the
+   report produced exactly as before.
+5. WHEN a lookup fails or an id is missing THEN the tool SHALL record a marker
+   and continue rather than failing the run.
+
+**Rationale:** The Insights `federal_district` is unreliable, but NationBuilder
+holds an authoritative per-person value exposed on `/api/v1/people`. Showing both
+side by side (option b, not replacing one with the other) lets a steward judge
+each case — early testing found many records where Insights was blank or wrong
+while NB had the correct district (e.g. Insights `AK0` vs NB `PA6` for a PA
+member). Only the flagged ids are queried to keep the call volume bounded
+(~1,000, not ~188K); concurrency keeps that under the Lambda timeout. The client
+is vendored from the `NBGet01` project; it uses a simple access-token V1 API call
+over `httpx`. Credentials live in the same Secrets Manager secret as the Insights
+ones in AWS.
+
+---
+
 ## Non-goals / explicit decisions
 
 - **No Google Drive delivery.** Considered, but the destination was a personal

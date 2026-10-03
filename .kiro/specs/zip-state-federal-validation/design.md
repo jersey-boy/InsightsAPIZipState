@@ -137,6 +137,21 @@ decision log for why all three sheets and why integer keys.
   presigned-link body as a documented, unused alternative.
 - `_dated_name(filename)` — inserts `RUN_DATE` (UTC `YYYYMMDD`, computed once per
   process) before the extension: `foo.csv` -> `foo_YYYYMMDD.csv`.
+- `nb_federal_districts(signup_ids)` — returns `{signup_id -> federal_district}`
+  from the NationBuilder V1 API for the flagged ids only, using a thread pool
+  (`NB_LOOKUP_CONCURRENCY`). Markers for the awkward cases: `""` (NB has none),
+  `NOT FOUND`, `LOOKUP ERROR`. No-op `{}` when NB creds are unset. In `run()`,
+  its output enriches the federal-district report with `nb_federal_district` and
+  a derived `federal_district_match` (MATCH/MISMATCH/blank).
+
+### 3b. `nationbuilder/` — vendored NB V1 API client
+
+A small, self-contained package copied from the `NBGet01` project
+(`client.py`, `models.py`, `exceptions.py`, `auth.py`). `NationBuilderClient`
+calls `https://{slug}.nationbuilder.com/api/v1` with an `access_token` query
+param over `httpx`, with 429 retry and typed exceptions. We use `get_person(id)`
+and read `federal_district` from the person's raw payload. `httpx` is bundled
+into the Lambda zip (not in the base runtime).
 
 ## Decision log — why it is built this way
 
@@ -221,6 +236,18 @@ spike degrades gracefully. The earlier presigned-link approach is retained as
 `_build_link_email()` (unused) in case the audience grows or files get large
 enough that links become preferable again.
 
+### Why cross-check federal district against NationBuilder (and show both)
+
+The Insights `federal_district` is unreliable — testing found it blank or wrong
+for many flagged records while NationBuilder had the correct district. Rather
+than replace one source with the other, the report shows both (`federal_district`
+from Insights, `nb_federal_district` from NB) plus a `MATCH`/`MISMATCH` flag, so a
+steward can judge each case. The lookup hits the NB API only for the flagged ids
+(~1,000), one call each, parallelized with a thread pool to stay under the Lambda
+timeout (which was raised to 900 s as a safety margin). The NB client is vendored
+rather than re-implemented, reusing the proven `NBGet01` code. It is entirely
+optional: unset NB creds -> cross-check skipped, report unchanged.
+
 ### Why date-stamp S3 objects
 
 The goal is a history of runs, not just the latest. Date-stamping each S3 object
@@ -247,14 +274,16 @@ Deployed to AWS account `068238656047`, region `eu-west-2`:
 
 - **S3** `zipstatefed-reports-068238656047` (Block Public Access on); reference at
   `refs/`, reports at `zip-state-reports/`, recipients at `config/recipients.txt`.
-- **Secrets Manager** `nb/insights/prod` (JSON of `NB_INSIGHTS_*`).
+- **Secrets Manager** `nb/insights/prod` (JSON of `NB_INSIGHTS_*` plus the
+  `NATIONBUILDER_*` creds for the cross-check).
 - **IAM role** `zipstatefed-lambda-role`, least-privilege inline policy: scoped
   CloudWatch Logs, `secretsmanager:GetSecretValue` on the secret,
   `s3:GetObject/PutObject` on the bucket, and `ses:SendEmail`/`ses:SendRawEmail`
   conditioned on the verified from-address (`SendRawEmail` is what carries the
   attachments).
 - **Layer** `arn:aws:lambda:eu-west-2:336392948345:layer:AWSSDKPandas-Python312:31`.
-- **Function** `zipstatefed-validation` (python3.12, 1024 MB, 300 s).
+- **Function** `zipstatefed-validation` (python3.12, 1024 MB, 900 s — raised from
+  300 s to accommodate the NationBuilder cross-check's ~1,000 API calls).
 - **Schedule** EventBridge Scheduler `zipstatefed-nightly`, `cron(0 6 * * ? *)`
   UTC, via `zipstatefed-scheduler-role`.
 - **SES** domain `lategothikdata.com` verified by DKIM (Route 53); sender
@@ -287,6 +316,8 @@ clear errors. This is the reason that function is more defensive than a naive
 | `SES_SENDER` / `SES_REGION` | Email sender + region | unset (no email) |
 | `RECIPIENTS_S3_URI` / `RECIPIENTS_FILE` | Recipient list source | `recipients.txt` |
 | `EMAIL_MESSAGE` | Free-text body message | CSV-vs-XLSX explanation |
+| `NATIONBUILDER_SLUG` / `NATIONBUILDER_ACCESS_TOKEN` | NB V1 API creds (enable cross-check) | unset (skip) |
+| `NB_LOOKUP_CONCURRENCY` | Parallel NB lookups | 10 |
 
 ## Security
 
