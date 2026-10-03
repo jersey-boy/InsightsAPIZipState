@@ -217,9 +217,13 @@ A success looks like:
 ```json
 {"statusCode": 200, "result": {"status": "OK", "rows": 178073,
  "zip_state_problems": 91, "federal_district_problems": 989,
+ "insights_vs_nb_discrepancies": 56,
  "presigned_urls": ["https://YOUR_BUCKET.s3..."],
  "emailed_to": ["someone@example.com"]}}
 ```
+
+`insights_vs_nb_discrepancies` is the row count of the third report
+(`insights_vs_nationbuilder_*`), present only when NB credentials are set.
 
 `presigned_urls` are per-object download links kept in the result for reference
 (the dated S3 objects; valid up to 7 days). `emailed_to` lists who received the

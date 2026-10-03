@@ -228,6 +228,34 @@ files. (Counts drift slightly run-to-run as the live data changes.)
 
 ---
 
+## Phase 9 — Insights vs NationBuilder discrepancy report
+
+- [x] 43. Extend the NB lookup to all three fields
+  - `nb_person_fields()` returns `{id: {state, zip, federal_district}}` from NB
+    `registered_address` + top-level `federal_district`; `nb_federal_districts()`
+    kept as a thin wrapper. _Requirements: 12.3_
+
+- [x] 44. Build the third report (`insights_vs_nationbuilder.*`)
+  - `_build_insights_vs_nb()` compares state/zip/federal_district (Insights vs
+    NB) over the union of all flagged records, with per-field MATCH/MISMATCH/
+    blank flags; keeps only rows with ≥1 real difference. `_norm_zip()` makes the
+    ZIP comparison fair (first 5 digits, zero-padded). _Requirements: 12.6, 12.7_
+
+- [x] 45. Wire into run() + delivery
+  - One `nb_person_fields` lookup over the union serves both the fed-district
+    cross-check column and the third report. Report written CSV+XLSX, added to
+    the S3 upload (dated) and email attachments; `_write_xlsx_zip_as_text`
+    generalized to format `insights_zip`/`nb_zip` too. Result gains
+    `insights_vs_nb_discrepancies`. _Requirements: 12.8_
+
+- [x] 46. Verify + deploy
+  - Local: 55 discrepancies of 1,072 flagged — surfaced ZIP and state mismatches
+    the per-test reports miss (e.g. 706172 zip 32092 vs 32256; 770260 state TX vs
+    AK). Redeployed; live invoke 200 OK, 56 discrepancies, dated S3 object
+    `insights_vs_nationbuilder_YYYYMMDD.*` present, emailed as a 3rd attachment.
+
+---
+
 ## Open / follow-up tasks
 
 - [ ] 32. SES production access

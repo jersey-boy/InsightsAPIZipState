@@ -90,6 +90,12 @@ ZIP_STATE_PROBLEMS_XLSX = "zip_state_problems.xlsx"
 FED_DISTRICT_PROBLEMS_CSV = "federal_district_problems.csv"
 FED_DISTRICT_PROBLEMS_XLSX = "federal_district_problems.xlsx"
 
+# Report 3 — Insights vs NationBuilder discrepancies (state / zip / federal
+# district) across the union of all flagged records. Only produced when NB
+# credentials are configured; only rows where at least one field differs.
+INSIGHTS_VS_NB_CSV = "insights_vs_nationbuilder.csv"
+INSIGHTS_VS_NB_XLSX = "insights_vs_nationbuilder.xlsx"
+
 # ZIP -> state reference is the USPS "ZIP_Locale_Detail" workbook. It has three
 # sheets that together cover all ZIPs:
 #   Detail  - the main locale list          (clean header on row 1)
@@ -395,15 +401,19 @@ def resolve_reference_file() -> str:
     return local_path
 
 
-def nb_federal_districts(signup_ids: list[int]) -> dict[int, str]:
-    """Look up the NationBuilder federal_district for each signup id.
+def nb_person_fields(signup_ids: list[int]) -> dict[int, dict[str, str]]:
+    """Look up state/zip/federal_district from NationBuilder for each signup id.
 
-    Returns {signup_id -> federal_district_or_marker}. The marker is "" when NB
-    has no district, "NOT FOUND" when the id doesn't exist in NationBuilder, and
-    "LOOKUP ERROR" when a call fails — so the report always has a value to show.
-    No-op returning {} when NB credentials are not configured.
+    Returns {signup_id -> {"state":..., "zip":..., "federal_district":...}} using
+    the member's NB `registered_address` (which holds the US state/zip that
+    correspond to the Insights "registered" values) and the top-level
+    `federal_district`. Values are "" when NB has none; each field is a marker
+    ("NOT FOUND"/"LOOKUP ERROR") when the id is missing or a call fails — so a
+    report always has something to show. No-op returning {} when NB credentials
+    are not configured.
 
-    Only the ids passed in (the flagged records) are queried, one GET each.
+    Only the ids passed in (the flagged records) are queried, one GET each,
+    parallelized via a thread pool (NB_LOOKUP_CONCURRENCY).
     """
     if not (NB_SLUG and NB_ACCESS_TOKEN) or not signup_ids:
         return {}
@@ -416,19 +426,28 @@ def nb_federal_districts(signup_ids: list[int]) -> dict[int, str]:
         NationBuilderError,
     )
 
+    def _marker(value: str) -> dict[str, str]:
+        return {"state": value, "zip": value, "federal_district": value}
+
     # One shared client; httpx.Client is safe to use across threads.
     client = NationBuilderClient(slug=NB_SLUG, access_token=NB_ACCESS_TOKEN)
 
-    def _one(sid: int) -> tuple[int, str]:
+    def _one(sid: int) -> tuple[int, dict[str, str]]:
         try:
-            district = client.get_person(sid).get_raw("federal_district")
-            return sid, ("" if district is None else str(district).strip())
+            person = client.get_person(sid)
+            addr = person.registered_address
+            district = person.get_raw("federal_district")
+            return sid, {
+                "state": (addr.state or "").strip() if addr else "",
+                "zip": (addr.zip or "").strip() if addr else "",
+                "federal_district": "" if district is None else str(district).strip(),
+            }
         except NotFoundError:
-            return sid, "NOT FOUND"
+            return sid, _marker("NOT FOUND")
         except NationBuilderError:
-            return sid, "LOOKUP ERROR"
+            return sid, _marker("LOOKUP ERROR")
 
-    result: dict[int, str] = {}
+    result: dict[int, dict[str, str]] = {}
     try:
         workers = max(1, NB_LOOKUP_CONCURRENCY)
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -437,6 +456,18 @@ def nb_federal_districts(signup_ids: list[int]) -> dict[int, str]:
     finally:
         client.close()
     return result
+
+
+def nb_federal_districts(signup_ids: list[int]) -> dict[int, str]:
+    """Back-compat helper: {signup_id -> federal_district} only.
+
+    Thin wrapper over nb_person_fields(), used by the federal-district report's
+    cross-check column.
+    """
+    return {
+        sid: fields["federal_district"]
+        for sid, fields in nb_person_fields(signup_ids).items()
+    }
 
 
 def build_zip_to_state(reference_file: str, mode: str = ZIP_MODE) -> dict[int, str]:
@@ -470,10 +501,107 @@ def _write_xlsx_zip_as_text(frame: pd.DataFrame, path: str) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         frame.to_excel(writer, index=False, sheet_name="data")
         worksheet = writer.sheets["data"]
-        # +1 because openpyxl columns are 1-indexed; header is row 1.
-        zip_col_idx = list(frame.columns).index(ZIP_COLUMN) + 1
-        for row in range(2, len(frame) + 2):
-            worksheet.cell(row=row, column=zip_col_idx).number_format = "@"
+        # Type every ZIP-like column present as text so Excel keeps leading
+        # zeros. Columns that aren't in this frame are simply skipped, so the
+        # same writer works for the full dataset, the per-test reports, and the
+        # Insights-vs-NB report (which has insights_zip / nb_zip).
+        zip_columns = [ZIP_COLUMN, "insights_zip", "nb_zip"]
+        cols = list(frame.columns)
+        for name in zip_columns:
+            if name not in cols:
+                continue
+            # +1 because openpyxl columns are 1-indexed; header is row 1.
+            col_idx = cols.index(name) + 1
+            for row in range(2, len(frame) + 2):
+                worksheet.cell(row=row, column=col_idx).number_format = "@"
+
+
+def _norm_zip(value: object) -> str:
+    """Normalize a ZIP for comparison: first 5 digits, zero-padded, as text.
+
+    Handles Insights values ("01002"), NB values ("19460" or "19460-1234"), and
+    blanks. Returns "" when there are no digits.
+    """
+    if value is None:
+        return ""
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if not digits:
+        return ""
+    return digits[:5].zfill(5)
+
+
+def _build_insights_vs_nb(
+    df: "pd.DataFrame", flagged_ids: list[int], nb_fields: dict[int, dict[str, str]]
+) -> "pd.DataFrame":
+    """Compare state/zip/federal_district (Insights vs NB) for flagged records.
+
+    Returns a DataFrame with, per record, both sources' three fields and a
+    per-field match flag, keeping ONLY rows where at least one field differs.
+    A field that NB could not supply ("", NOT FOUND, LOOKUP ERROR) is treated as
+    "not comparable" and does not, by itself, count as a discrepancy.
+    """
+    flagged = set(flagged_ids)
+    base = df[
+        pd.to_numeric(df["signup_id"], errors="coerce").isin(flagged)
+    ][
+        ["signup_id", "registered_state", "registered_zip_clean", "federal_district"]
+    ].copy()
+
+    rows = []
+    for _, r in base.iterrows():
+        sid_num = pd.to_numeric(r["signup_id"], errors="coerce")
+        nb = nb_fields.get(int(sid_num), {}) if pd.notna(sid_num) else {}
+
+        ins_state = str(r["registered_state"] or "").strip().upper()
+        nb_state = str(nb.get("state", "") or "").strip().upper()
+        ins_zip = _norm_zip(r["registered_zip_clean"])
+        nb_zip = _norm_zip(nb.get("zip", ""))
+        ins_fd = str(r["federal_district"] or "").strip().upper()
+        nb_fd = str(nb.get("federal_district", "") or "").strip().upper()
+
+        not_readable = {"", "NOT FOUND", "LOOKUP ERROR"}
+
+        def _flag(ins: str, nb_val: str) -> str:
+            if nb_val in not_readable:
+                return ""  # not comparable
+            return "MATCH" if ins == nb_val else "MISMATCH"
+
+        state_match = _flag(ins_state, nb_state)
+        zip_match = _flag(ins_zip, nb_zip)
+        fd_match = _flag(ins_fd, nb_fd)
+
+        if "MISMATCH" not in (state_match, zip_match, fd_match):
+            continue  # keep only records with at least one real difference
+
+        rows.append(
+            {
+                "signup_id": r["signup_id"],
+                "insights_state": r["registered_state"],
+                "nb_state": nb.get("state", ""),
+                "state_match": state_match,
+                "insights_zip": r["registered_zip_clean"],
+                "nb_zip": nb.get("zip", ""),
+                "zip_match": zip_match,
+                "insights_federal_district": r["federal_district"],
+                "nb_federal_district": nb.get("federal_district", ""),
+                "federal_district_match": fd_match,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "signup_id",
+            "insights_state",
+            "nb_state",
+            "state_match",
+            "insights_zip",
+            "nb_zip",
+            "zip_match",
+            "insights_federal_district",
+            "nb_federal_district",
+            "federal_district_match",
+        ],
+    )
 
 
 def run() -> dict:
@@ -606,50 +734,63 @@ def run() -> dict:
             columns=["zip_state_problem"]
         )
 
-        # NationBuilder cross-check: the Insights federal_district is unreliable,
-        # so for the flagged records look up the authoritative value from the NB
-        # API and show both side by side. Adds two columns:
-        #   nb_federal_district      - the value NationBuilder has for that id
-        #   federal_district_match   - MATCH / MISMATCH between Insights and NB
-        # Only runs when NB credentials are configured; otherwise the report is
-        # unchanged.
-        if NB_SLUG and NB_ACCESS_TOKEN and len(fed_district_problems) > 0:
-            flagged_ids = [
-                int(x)
-                for x in pd.to_numeric(
-                    fed_district_problems["signup_id"], errors="coerce"
-                ).dropna()
-            ]
-            nb_map = nb_federal_districts(flagged_ids)
-            fed_district_problems = fed_district_problems.copy()
-
-            def _nb_value(row: pd.Series) -> str:
-                sid = pd.to_numeric(row["signup_id"], errors="coerce")
-                if pd.isna(sid):
-                    return ""
-                return nb_map.get(int(sid), "")
-
-            def _match(row: pd.Series) -> str:
-                insights = str(row["federal_district"]).strip().upper()
-                nb = str(row["nb_federal_district"]).strip().upper()
-                # Don't label a comparison when NB couldn't be read.
-                if nb in ("", "NOT FOUND", "LOOKUP ERROR"):
-                    return ""
-                return "MATCH" if insights == nb else "MISMATCH"
-
-            fed_district_problems["nb_federal_district"] = fed_district_problems.apply(
-                _nb_value, axis=1
+        # --- NationBuilder cross-check -------------------------------------
+        # The Insights fields are unreliable, so for every flagged record (the
+        # UNION of both tests) look up the authoritative state/zip/federal
+        # district from NationBuilder. One lookup serves two purposes:
+        #   1. adds nb_federal_district + federal_district_match to the federal
+        #      district report (side-by-side on that one field), and
+        #   2. builds a third report comparing all three fields from both
+        #      sources, keeping only rows where at least one field differs.
+        # All of this is skipped when NB credentials are not configured.
+        insights_vs_nb = None  # third report DataFrame (None if NB disabled)
+        if NB_SLUG and NB_ACCESS_TOKEN:
+            union = pd.concat(
+                [zip_state_problems["signup_id"], fed_district_problems["signup_id"]]
             )
-            fed_district_problems["federal_district_match"] = (
-                fed_district_problems.apply(_match, axis=1)
+            flagged_ids = sorted(
+                {int(x) for x in pd.to_numeric(union, errors="coerce").dropna()}
             )
-            lines.append("")
-            mm = int((fed_district_problems["federal_district_match"] == "MISMATCH").sum())
-            ma = int((fed_district_problems["federal_district_match"] == "MATCH").sum())
+            nb_fields = nb_person_fields(flagged_ids)
+
+            # 1) Enrich the federal-district report with the NB district.
+            if len(fed_district_problems) > 0:
+                fed_district_problems = fed_district_problems.copy()
+
+                def _nb_fd(row: pd.Series) -> str:
+                    sid = pd.to_numeric(row["signup_id"], errors="coerce")
+                    if pd.isna(sid):
+                        return ""
+                    return nb_fields.get(int(sid), {}).get("federal_district", "")
+
+                def _fd_match(row: pd.Series) -> str:
+                    ins = str(row["federal_district"]).strip().upper()
+                    nb = str(row["nb_federal_district"]).strip().upper()
+                    if nb in ("", "NOT FOUND", "LOOKUP ERROR"):
+                        return ""
+                    return "MATCH" if ins == nb else "MISMATCH"
+
+                fed_district_problems["nb_federal_district"] = (
+                    fed_district_problems.apply(_nb_fd, axis=1)
+                )
+                fed_district_problems["federal_district_match"] = (
+                    fed_district_problems.apply(_fd_match, axis=1)
+                )
+                mm = int((fed_district_problems["federal_district_match"] == "MISMATCH").sum())
+                ma = int((fed_district_problems["federal_district_match"] == "MATCH").sum())
+                lines.append("")
+                lines.append(
+                    f"NationBuilder cross-check (flagged ids): "
+                    f"{ma} match, {mm} mismatch, "
+                    f"{len(fed_district_problems) - ma - mm} not comparable."
+                )
+
+            # 2) Build the Insights-vs-NB discrepancy report across the union.
+            insights_vs_nb = _build_insights_vs_nb(df, flagged_ids, nb_fields)
             lines.append(
-                f"NationBuilder cross-check (flagged ids): "
-                f"{ma} match, {mm} mismatch, "
-                f"{len(fed_district_problems) - ma - mm} not comparable."
+                f"Insights vs NationBuilder: {len(insights_vs_nb)} record(s) "
+                f"with a state/zip/federal-district discrepancy "
+                f"(of {len(flagged_ids)} flagged)."
             )
 
         # Collect every file we write so we can (optionally) upload them to S3.
@@ -688,6 +829,23 @@ def run() -> dict:
         )
         lines.append(f"  {fd_csv}")
         lines.append(f"  {fd_xlsx}")
+
+        # Report 3 — Insights vs NationBuilder discrepancies (only when the NB
+        # cross-check ran). Written even when empty so the absence of rows is an
+        # explicit "no discrepancies found" rather than a missing file.
+        if insights_vs_nb is not None:
+            iv_csv = _out(INSIGHTS_VS_NB_CSV)
+            iv_xlsx = _out(INSIGHTS_VS_NB_XLSX)
+            insights_vs_nb.to_csv(iv_csv, index=False)
+            _write_xlsx_zip_as_text(insights_vs_nb, iv_xlsx)
+            written += [iv_csv, iv_xlsx]
+            result["insights_vs_nb_discrepancies"] = int(len(insights_vs_nb))
+            lines.append(
+                f"Saved Insights-vs-NationBuilder discrepancies "
+                f"({len(insights_vs_nb)} rows):"
+            )
+            lines.append(f"  {iv_csv}")
+            lines.append(f"  {iv_xlsx}")
 
         # Optional: upload to S3. Objects are date-stamped (YYYYMMDD) so a
         # history accumulates in the bucket. Presigned URLs are still generated

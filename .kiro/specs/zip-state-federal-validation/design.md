@@ -137,12 +137,23 @@ decision log for why all three sheets and why integer keys.
   presigned-link body as a documented, unused alternative.
 - `_dated_name(filename)` — inserts `RUN_DATE` (UTC `YYYYMMDD`, computed once per
   process) before the extension: `foo.csv` -> `foo_YYYYMMDD.csv`.
-- `nb_federal_districts(signup_ids)` — returns `{signup_id -> federal_district}`
-  from the NationBuilder V1 API for the flagged ids only, using a thread pool
-  (`NB_LOOKUP_CONCURRENCY`). Markers for the awkward cases: `""` (NB has none),
-  `NOT FOUND`, `LOOKUP ERROR`. No-op `{}` when NB creds are unset. In `run()`,
-  its output enriches the federal-district report with `nb_federal_district` and
-  a derived `federal_district_match` (MATCH/MISMATCH/blank).
+- `nb_person_fields(signup_ids)` — returns
+  `{signup_id -> {state, zip, federal_district}}` from the NationBuilder V1 API
+  for the flagged ids only, using a thread pool (`NB_LOOKUP_CONCURRENCY`). State
+  and zip come from the member's `registered_address`; district from the
+  top-level field. Markers for the awkward cases: `""` (NB has none),
+  `NOT FOUND`, `LOOKUP ERROR`. No-op `{}` when NB creds are unset.
+  `nb_federal_districts()` is a thin wrapper returning just the district (used
+  for the federal-district report's cross-check column).
+- `_build_insights_vs_nb(df, flagged_ids, nb_fields)` — builds the third report:
+  compares state/zip/federal_district between Insights and NB for the union of
+  flagged ids, with per-field MATCH/MISMATCH/blank flags, keeping only rows with
+  at least one real difference. `_norm_zip()` normalizes ZIPs (first 5 digits,
+  zero-padded) for a fair comparison.
+- In `run()`, a single `nb_person_fields` lookup over the union of both reports'
+  flagged ids feeds both the federal-district cross-check column and the third
+  report, so NB is queried once per flagged id regardless of which test flagged
+  it.
 
 ### 3b. `nationbuilder/` — vendored NB V1 API client
 
@@ -246,7 +257,19 @@ steward can judge each case. The lookup hits the NB API only for the flagged ids
 (~1,000), one call each, parallelized with a thread pool to stay under the Lambda
 timeout (which was raised to 900 s as a safety margin). The NB client is vendored
 rather than re-implemented, reusing the proven `NBGet01` code. It is entirely
-optional: unset NB creds -> cross-check skipped, report unchanged.
+optional: unset NB creds -> cross-check skipped, reports unchanged.
+
+### Why a third "Insights vs NationBuilder" report
+
+The federal-district cross-check only compares one field. Once we were already
+fetching each flagged member from NB, comparing all three "registered" fields
+(state, zip, federal district) was cheap and surfaced discrepancies the per-test
+reports can't — e.g. a ZIP or state that disagrees between the two systems. The
+report covers the union of flagged records (every record with a known Insights
+problem), shows both sources side by side with per-field flags, and keeps only
+rows with a real difference so it is an actionable worklist, not a dump. NB
+state/zip come from `registered_address` specifically (not `primary_address`,
+which for Democrats Abroad members is typically their overseas address).
 
 ### Why date-stamp S3 objects
 

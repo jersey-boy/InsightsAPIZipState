@@ -64,6 +64,17 @@ Run any script with:
   `signup_id`, run in parallel) and shown side by side. The lookup is a no-op
   when NB credentials are unset.
 
+**Report 3 — Insights vs NationBuilder** (only when NB credentials are set):
+
+- `insights_vs_nationbuilder.csv` / `.xlsx` — compares three fields —
+  `state`, `zip`, and `federal_district` — between Insights and NationBuilder for
+  the **union of all flagged records** (anything flagged by either test). Each
+  field has its own `*_match` flag (`MATCH`/`MISMATCH`/blank-when-not-comparable),
+  and the report keeps **only records where at least one field differs**. The NB
+  values come from the member's `registered_address` (state, zip) and the
+  top-level `federal_district`. This catches discrepancies the per-test reports
+  miss — e.g. a ZIP or state that disagrees between the two systems.
+
 The two problem reports are independent; a member flagged by both checks appears
 in both files. A passing check leaves the flag blank. Problem messages are
 explicit, e.g. `ZIP STATE PROBLEM. SHOULD BE VA`,

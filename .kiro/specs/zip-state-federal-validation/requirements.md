@@ -403,11 +403,24 @@ where the (unreliable) Insights value is wrong rather than trusting it blindly.
    `federal_district_match` (`MATCH`/`MISMATCH`, or blank when not comparable).
 3. WHEN querying NB THEN the tool SHALL only call the API for the flagged
    `signup_id`s (not the whole nation), one call per id, run concurrently
-   (`NB_LOOKUP_CONCURRENCY`, default 10).
+   (`NB_LOOKUP_CONCURRENCY`, default 10). The NB values are the member's
+   `registered_address.state` and `registered_address.zip` (which correspond to
+   the Insights "registered" values) and the top-level `federal_district`.
 4. WHEN NB credentials are unset THEN the cross-check SHALL be skipped and the
-   report produced exactly as before.
+   reports produced exactly as before.
 5. WHEN a lookup fails or an id is missing THEN the tool SHALL record a marker
    and continue rather than failing the run.
+6. WHEN the cross-check runs THEN the tool SHALL also produce a third report,
+   `insights_vs_nationbuilder.*`, over the **union of all flagged records**
+   (anything flagged by either test), comparing `state`, `zip`, and
+   `federal_district` between Insights and NB with a per-field match flag.
+7. WHEN building the third report THEN ZIPs SHALL be compared normalized (first
+   five digits, zero-padded) so `01002`, `1002`, and `01002-1234` compare
+   equivalently, and the report SHALL keep ONLY records where at least one of
+   the three fields genuinely differs (a field NB cannot supply is "not
+   comparable" and does not by itself count as a difference).
+8. WHEN the third report is produced THEN it SHALL be delivered the same way as
+   the other reports (date-stamped S3 object + email attachment).
 
 **Rationale:** The Insights `federal_district` is unreliable, but NationBuilder
 holds an authoritative per-person value exposed on `/api/v1/people`. Showing both
