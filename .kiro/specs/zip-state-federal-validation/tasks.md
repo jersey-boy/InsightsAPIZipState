@@ -1,280 +1,105 @@
-# Tasks — Zip / State / Federal District Validation
+# Tasks — Zip / State / Federal District Validation (NationBuilder V2)
 
-Implementation history, grouped into phases. Each task notes **what** was done,
-**why**, and **how**, plus how it was verified. Checked items are built and
-verified against the live Insights site and (for the AWS phases) the live AWS
-account `068238656047` in `eu-west-2`.
+Implementation record. The system is built, deployed, and verified against the
+live NationBuilder V2 API and AWS account `068238656047` (eu-west-2).
 
-Current run figures (delivery mode, three-sheet reference): ~178,073 records;
-~91 ZIP/state problems, ~989 federal district problems, reported in two separate
-files. (Counts drift slightly run-to-run as the live data changes.)
+Latest live run: ~188.5k signups pulled, **179,540 kept** after the filter,
+**95 ZIP/state** problems, **986 federal-district** problems; dated reports in S3
+and emailed.
+
+> History note: the project originally sourced data from NationBuilder Insights
+> (Tableau) and later added a NationBuilder V1 cross-check. It was then migrated
+> to be **V2-only**, and all Insights/Tableau and V1 code was removed. The tasks
+> below describe the current V2 system.
 
 ---
 
-## Phase 1 — Local validation tool
+## 1. NationBuilder V2 client (`nationbuilder_v2/`)
 
-- [x] 1. Project scaffolding and secrets handling
-  - `.env`, `.env.example`, `.gitignore`, `requirements.txt`; `.env` and output
-    files gitignored.
-  - _Why:_ keep the token out of source; make first-run setup obvious.
-  - _Requirements: 1.1_
+- [x] 1.1 OAuth 2.0 refresh-token client (`client.py`): `from_env()` mints an
+  access token from the refresh token; `refresh_access_token()` rotates it and
+  invokes an `on_refresh` callback to persist the new token.
+  - _Requirements: 1_
+- [x] 1.2 Parallel full-nation pull (`fetch_all_signups`): page-number
+  pagination fetched via a thread pool (default 20), batched, stopping on an
+  empty batch; `_get_page` retries on 429/5xx. ~4–5 min for ~188k.
+  - _Why:_ serial paging (~19 min) exceeds the Lambda max. _Requirements: 3_
 
-- [x] 2. Shared connection module (`nb_insights.py`)
-  - [x] 2.1 Load `.env` and build the `tableau_api_lib` config from env vars.
-  - [x] 2.2 `_require()` raises `MissingCredentialsError` on missing vars.
-  - [x] 2.3 `insights_connection()` context manager (sign in / always sign out).
-  - _Why:_ one reusable, safe connection path; guaranteed sign-out avoids stale
-    sessions. _Requirements: 1.1–1.3_
+## 2. Extract + filter (`nationbuilder_v2/extract.py`)
 
-- [x] 3. Content inventory app (`list_reports.py`)
-  - Lists workbooks/views/data sources to CSV; used to find the target view id
-    (`c7f541b2-87db-4fad-97c5-2e532dbbe956`). _Requirements: supporting_
-
-- [x] 4. Pull + shape the view data (`pull_zip_state_federal.py`)
-  - [x] 4.1 Fetch by view id.
-  - [x] 4.2 Reorder columns; append unexpected columns (no data loss).
-  - [x] 4.3 Add blank `zip_state_problem` / `federal_district_problem`.
-  - _Requirements: 2, 3_
-
-- [x] 5. ZIP / state validation
-  - [x] 5.1 Build integer-keyed `zip -> state` lookup (initially from a single
-    `zip_state_lookup.csv`; later replaced — see Phase 2).
-  - [x] 5.2 Precedence: blank ZIP → not found → match (blank) → `SHOULD BE`.
-  - _Why integer keys:_ normalizes leading-zero ZIPs without string padding.
+- [x] 2.1 `project_signup`: signup_id, registered_state, registered_zip (5-digit),
+  federal_district, us_citizen, date_last_verified. us_citizen/date_last_verified
+  are custom fields (in `custom_values`), so the pull requests
+  `extra_fields[signups]=registered_address,custom_values`.
+  - _Requirements: 2_
+- [x] 2.2 Inclusion filter (`keep_row`): non-blank zip AND truthy us_citizen AND
+  non-blank date_last_verified; `extract_filtered_signups` returns kept rows +
+  exclusion stats.
   - _Requirements: 4_
 
-- [x] 6. Federal district validation
-  - [x] 6.1 Compare `fed_dist_prefix` to `registered_state`.
-  - [x] 6.2 Blank prefix → `FEDERAL DISTRICT IS BLANK`.
-  - [x] 6.3 Drop `fed_dist_prefix` before output.
-  - _Why:_ the state is already in the district code, so no reference needed.
-  - _Requirements: 5_
+## 3. Validation pipeline (`validate_zip_fed.py`)
 
-- [x] 7. Output + run visibility
-  - [x] 7.1 Full annotated CSV/XLSX; ZIP zero-padded (CSV) and typed as text
-    (XLSX) to preserve leading zeros.
-  - [x] 7.2 Status file with counts + problem breakdown; `STATUS: OK/ERROR`.
-  - _Why the status file:_ the dev drive's shell mangled output; a written record
-    is the reliable log. _Requirements: 6, 6a, 7_
+- [x] 3.1 ZIP/state check against the merged ZIP reference (integer match;
+  SHOULD BE / ZIP IS BLANK / ZIP NOT FOUND).
+  - _Requirements: 5, 8_
+- [x] 3.2 Federal-district check: two-letter prefix of `federal_district` vs.
+  `registered_state` (regex-derived prefix; blank → explicit message).
+  - _Requirements: 6_
+- [x] 3.3 Write full dataset + two per-test problem reports (CSV + XLSX; ZIP typed
+  as text in XLSX).
+  - _Requirements: 7_
+- [x] 3.4 Status file + result dict (counts, filter stats, files, URLs, emailed);
+  `main()` + `handler()`.
+  - _Requirements: 12_
 
----
+## 4. ZIP reference
 
-## Phase 2 — Reference migration & accuracy
+- [x] 4.1 Merge `Detail` + `Unique` + `Other` sheets of `ZIP_Locale_Detail.xlsx`
+  (Detail wins; stacked-header handling), delivery ZIP by default (`ZIP_MODE`).
+  Sourced locally or from S3 (`ZIP_LOOKUP_S3_URI`). See
+  `ZIP_REFERENCE_AND_ERRORS.md`.
+  - _Requirements: 8_
 
-- [x] 8. Switch to `ZIP_Locale_Detail.xlsx`
-  - [x] 8.1 Read the USPS workbook; add `ZIP_MODE` (delivery/physical).
-  - [x] 8.2 Investigate physical vs delivery: physical produced ~33K false
-    "ZIP NOT FOUND" (facility-ZIP coverage gap); switched default to delivery.
-  - [x] 8.3 Merge `Detail` + `Unique` + `Other` (Detail wins), handling the
-    3-row stacked header on the latter two. Recovered ~195 valid ZIPs.
-  - [x] 8.4 Decision: keep `ZIP NOT FOUND` (remaining ones are placeholder/
-    unassigned ZIPs, **not** non-US/APO — so no "non-US" message added).
-  - _How verified:_ compared member ZIPs against each sheet's coverage; not-found
-    dropped from ~33,578 → ~90. _Requirements: 8_
+## 5. S3 output + email
 
-- [x] 9. Documentation: `ZIP_REFERENCE_AND_ERRORS.md`
-  - Explains the three-sheet layout/merge, `ZIP_MODE`, and every error message.
+- [x] 5.1 Date-stamped S3 upload (`_YYYYMMDD`) + presigned URLs; no-op when
+  `S3_BUCKET` unset. _Requirements: 9_
+- [x] 5.2 SES email of the two problem reports as attachments (full dataset
+  excluded; size guard; configurable `EMAIL_MESSAGE`); recipients from S3/local
+  list. _Requirements: 11_
 
-- [x] 10. Split into two per-test reports
-  - `zip_state_problems.*` and `federal_district_problems.*`, each carrying only
-    its own flag; full dataset retained with both flags.
-  - _Why:_ the checks are reviewed independently. _Requirements: 6_
+## 6. AWS deployment
 
-- [x] 11. Remove PII (`full_name`) from all outputs
-  - Dropped right after fetch; `signup_id` kept for traceability.
-  - _Requirements: 2.2_
+- [x] 6.1 Secrets Manager secret `nb/v2/prod` with the V2 OAuth creds; code loads
+  it via `NATIONBUILDER_SECRET_ID` and writes the rotated refresh token back.
+  - _Requirements: 1.2, 10.2_
+- [x] 6.2 IAM role `zipstatefed-lambda-role`: logs, Get+Put on `nb/v2/prod`, S3
+  Get/Put, SES send scoped to the from-address.
+- [x] 6.3 `build_lambda_zip.py` packages `validate_zip_fed.py` + `nationbuilder_v2`
+  (pandas/numpy excluded — managed layer); ~1 MB zip.
+- [x] 6.4 Function `zipstatefed-validation`: handler `validate_zip_fed.handler`,
+  layer `AWSSDKPandas-Python312`, **3008 MB** (raised after a 1024 MB
+  `Runtime.OutOfMemory`), 900 s timeout.
+  - _Requirements: 3.3, 10_
+- [x] 6.5 EventBridge Scheduler `zipstatefed-nightly` (cron `0 6 * * ? *` UTC).
+- [x] 6.6 Verified live: 200 OK, 179,540 kept, dated S3 objects present, emailed,
+  refresh token rotation persisted to the secret.
 
-- [x] 12. Git hygiene
-  - Restored `.env.example` after it was accidentally overwritten with real
-    credentials (prevented a secret leak); untracked + gitignored the status
-    file (contains member names).
+## 7. Legacy removal
 
----
-
-## Phase 3 — S3 output + presigned URLs
-
-- [x] 13. Configurable output location (`OUTPUT_DIR`, default `.`)
-  - All outputs + status file routed through `_out()`. _Requirements: 9.3, 10.2_
-
-- [x] 14. Optional S3 upload + presigned URLs
-  - `upload_to_s3()` gated on `S3_BUCKET`; presigned GET per file
-    (`PRESIGN_EXPIRY_SECONDS`, default 7 days). boto3 lazy-imported; credentials
-    from AWS profile locally / role in Lambda.
-  - _How verified:_ mocked boto3 (keys, one upload per file, one URL per file).
-  - _Requirements: 9_
-
----
-
-## Phase 4 — Lambda-ready refactor
-
-- [x] 15. Handler + `run()` split
-  - Refactored `main()` into `run()` (returns result dict); added `main()` and
-    `handler(event, context)` → `{statusCode, result}`. _Requirements: 10.1, 7.3_
-
-- [x] 16. Secrets Manager loading (`nb_insights.py`)
-  - `_load_secret_into_env()` fills only-missing vars from `NB_INSIGHTS_SECRET_ID`
-    (local `.env` wins). Hardened later for the BOM bug (Phase 5). _Req: 10.3_
-
-- [x] 17. S3-sourced reference (`ZIP_LOOKUP_S3_URI`)
-  - `resolve_reference_file()` downloads to `OUTPUT_DIR` when set, else local.
-  - _Why:_ keeps the ~4 MB workbook out of the package; updatable without
-    redeploy. _Requirements: 10.2_
-
-- [x] 18. Packaging decision + build
-  - Chose zip + AWS-managed pandas layer over Docker (pandas Windows-wheel
-    problem; no Docker engine locally). `build_lambda_zip.py` installs Linux
-    wheels and prunes pandas/numpy → ~2.8 MB zip. `Dockerfile`/`.dockerignore`
-    kept as fallback. _How verified:_ inspected zip contents (source + deps, no
-    pandas/numpy). _Requirements: 10.4_
-
-- [x] 19. `DEPLOY.md`
-  - zip + layer as primary path; container image as appendix; later extended
-    with the SES section.
-
----
-
-## Phase 5 — AWS deployment (eu-west-2, account 068238656047)
-
-- [x] 20. S3 bucket `zipstatefed-reports-068238656047`
-  - All four Block Public Access settings enabled (PII). _Requirements: 9.4_
-- [x] 21. Upload reference workbook to `refs/`.
-- [x] 22. Secrets Manager secret `nb/insights/prod` (built from local `.env`).
-- [x] 23. IAM execution role `zipstatefed-lambda-role`
-  - Least-privilege: scoped logs, `secretsmanager:GetSecretValue`,
-    `s3:GetObject/PutObject`, (later) scoped `ses:SendEmail`.
-- [x] 24. Pandas layer resolved:
-  `arn:aws:lambda:eu-west-2:336392948345:layer:AWSSDKPandas-Python312:31`.
-- [x] 25. Create function `zipstatefed-validation` (python3.12, 1024 MB, 300 s).
-- [x] 26. Fix the Secrets Manager **BOM bug**
-  - First invoke failed with `JSONDecodeError` at char 0: PowerShell
-    `Set-Content -Encoding utf8` wrote a UTF-8 BOM into the secret. Re-stored
-    without a BOM (.NET `UTF8Encoding($false)`) AND hardened
-    `_load_secret_into_env` (strip BOM, handle `SecretBinary`, clear errors).
-  - _How verified:_ re-invoke returned 200 OK; six files confirmed in S3.
-- [x] 27. Nightly schedule
-  - EventBridge Scheduler `zipstatefed-nightly`, `cron(0 6 * * ? *)` UTC, via
-    `zipstatefed-scheduler-role` (invoke-only).
-
----
-
-## Phase 6 — Email notifications (Amazon SES)
-
-- [x] 28. Verify SES sender
-  - Domain `lategothikdata.com` verified via DKIM CNAMEs added to its Route 53
-    zone; sender `insights-reports@lategothikdata.com`. Recipient
-    `rick_meier@msn.com` also verified (SES sandbox).
-- [x] 29. Recipient list in S3 (`config/recipients.txt`)
-  - `load_recipients()` reads one-per-line, `#` comments, from S3 or local.
-  - _Why S3:_ manage recipients without a redeploy. _Requirements: 11.5_
-- [x] 30. `notify_by_email()`
-  - Sends counts + presigned links via SES; body carries links only, never data.
-  - _Requirements: 11.1, 11.4_
-- [x] 31. Refinements
-  - [x] 31.1 Email the **problem reports only**; full dataset uploaded to S3 but
-    not linked (`EMAIL_EXCLUDE_FILES`). _Requirements: 11.3_
-  - [x] 31.2 Configurable `EMAIL_MESSAGE`; default explains the CSV-vs-XLSX
-    leading-zero ZIP issue. _Requirements: 11.2_
-  - _How verified:_ mock (message present, full dataset excluded, 4 problem links)
-    and a live invoke (200 OK, `emailed_to: rick_meier@msn.com`).
-
----
-
-## Phase 7 — Attachments + dated S3 history
-
-- [x] 37. Date-stamp S3 objects (`YYYYMMDD`, UTC)
-  - `RUN_DATE` + `_dated_name()`; `upload_to_s3` writes dated object names so a
-    history accumulates. Local file names stay undated.
-  - _Why:_ keep every run's reports, not just the latest. _Requirements: 9.2_
-
-- [x] 38. Email problem reports as attachments (not links)
-  - Rewrote `notify_by_email` to build a `MIMEMultipart` and send via
-    `ses.send_raw_email`, attaching the two problem reports (dated names);
-    excludes the full dataset; skips any attachment over `SES_MAX_ATTACH_BYTES`
-    with a note in the body. Email decoupled from S3 (attaches local files).
-  - Added `ses:SendRawEmail` to the IAM policy.
-  - Kept `_build_link_email()` as the documented, unused link alternative.
-  - _How verified:_ mock (4 dated attachments, full dataset excluded, message
-    present, link alt callable) and a live invoke (200 OK, emailed_to set, dated
-    objects present in S3). _Requirements: 11.1–11.5_
-
----
-
-## Phase 8 — NationBuilder federal-district cross-check
-
-- [x] 39. Vendor the NB V1 API client
-  - Copied the `nationbuilder` package from `NBGet01` (client/models/exceptions/
-    auth); added `httpx==0.27.2`; NB creds in `.env` (and the AWS secret).
-  - _Why vendor:_ reuse proven code rather than re-implement. _Requirements: 12_
-
-- [x] 40. `nb_federal_districts(signup_ids)` lookup
-  - One `get_person` per flagged id; markers for blank / NOT FOUND / LOOKUP
-    ERROR; parallelized via a thread pool (`NB_LOOKUP_CONCURRENCY`, default 10).
-  - _Why only flagged ids:_ bounds the call volume (~1,000, not ~188K).
-  - _Why parallel:_ serial ~7 min would exceed the Lambda timeout; parallel
-    ~1.6 min. _Requirements: 12.1, 12.3, 12.5_
-
-- [x] 41. Enrich the federal-district report
-  - Added `nb_federal_district` + `federal_district_match` (MATCH/MISMATCH/blank)
-    columns and a status-line summary (match/mismatch/not-comparable counts).
-  - Verified live: Insights `AK0` vs NB `PA6` flagged MISMATCH; blank-vs-blank
-    not comparable. First full run: 9 match, 54 mismatch, 926 not comparable.
-  - _Requirements: 12.2_
-
-- [x] 42. Deploy
-  - Added `NATIONBUILDER_*` to the Secrets Manager secret (no-BOM); updated
-    `build_lambda_zip.py` to bundle the `nationbuilder/` package + `httpx`;
-    raised the Lambda timeout 300 s -> 900 s. Redeployed and invoked: 200 OK,
-    cross-check columns present in the dated S3 object. _Requirements: 12_
-
----
-
-## Phase 9 — Insights vs NationBuilder discrepancy report
-
-- [x] 43. Extend the NB lookup to all three fields
-  - `nb_person_fields()` returns `{id: {state, zip, federal_district}}` from NB
-    `registered_address` + top-level `federal_district`; `nb_federal_districts()`
-    kept as a thin wrapper. _Requirements: 12.3_
-
-- [x] 44. Build the third report (`insights_vs_nationbuilder.*`)
-  - `_build_insights_vs_nb()` compares state/zip/federal_district (Insights vs
-    NB) over the union of all flagged records, with per-field MATCH/MISMATCH/
-    blank flags; keeps only rows with ≥1 real difference. `_norm_zip()` makes the
-    ZIP comparison fair (first 5 digits, zero-padded). _Requirements: 12.6, 12.7_
-
-- [x] 45. Wire into run() + delivery
-  - One `nb_person_fields` lookup over the union serves both the fed-district
-    cross-check column and the third report. Report written CSV+XLSX, added to
-    the S3 upload (dated) and email attachments; `_write_xlsx_zip_as_text`
-    generalized to format `insights_zip`/`nb_zip` too. Result gains
-    `insights_vs_nb_discrepancies`. _Requirements: 12.8_
-
-- [x] 46. Verify + deploy
-  - Local: 55 discrepancies of 1,072 flagged — surfaced ZIP and state mismatches
-    the per-test reports miss (e.g. 706172 zip 32092 vs 32256; 770260 state TX vs
-    AK). Redeployed; live invoke 200 OK, 56 discrepancies, dated S3 object
-    `insights_vs_nationbuilder_YYYYMMDD.*` present, emailed as a 3rd attachment.
+- [x] 7.1 Deleted the Insights/Tableau code (`pull_zip_state_federal.py`,
+  `nb_insights.py`, `list_reports.py`, `sources.py`) and the V1 `nationbuilder/`
+  package; dropped `tableau-api-lib`.
+- [x] 7.2 Updated build/packaging, `.env.example`, and all docs to V2-only.
 
 ---
 
 ## Open / follow-up tasks
 
-- [ ] 32. SES production access
-  - Request from the SES console before adding recipients that can't be
-    individually verified (sandbox only sends to verified addresses).
-
-- [ ] 33. Rotate the NationBuilder token
-  - It currently lives in the local `.env` and in Secrets Manager. If rotated,
-    update the secret with `put-secret-value` using the no-BOM approach.
-
-- [ ] 34. Deliver-ability hardening (optional)
-  - First emails from the new domain may land in spam until reputation builds;
-    consider SPF/DMARC records if wider distribution is planned.
-
-- [ ] 35. Automated unit tests (optional)
-  - Fixtures for `_zip_state_result` / `_federal_district_result` (match,
-    mismatch, blank, not-found) and for the merge/BOM/email helpers. Add only if
-    the team wants regression coverage.
-
-- [ ] 36. Infrastructure-as-code (optional)
-  - The deploy is currently CLI-driven with policy JSON in `aws/`. If repeatable
-    environments are needed, port to SAM/CDK/Terraform.
+- [ ] 8. SES production access — required before adding recipients that can't be
+  individually verified (sandbox only sends to verified addresses).
+- [ ] 9. Rotate the NationBuilder OAuth client secret periodically (it lives in
+  `.env` and Secrets Manager).
+- [ ] 10. Optional: automated unit tests for the checks and the extract/filter.
+- [ ] 11. Optional: infrastructure-as-code (SAM/CDK/Terraform) for repeatable
+  deploys instead of the current CLI steps.

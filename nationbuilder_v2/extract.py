@@ -112,13 +112,15 @@ def extract_all_signups(
     client: NationBuilderV2Client | None = None,
     concurrency: int = 20,
     progress=None,
+    on_refresh=None,
 ) -> list[dict[str, Any]]:
     """Pull ALL signups in parallel and project them (NO filtering applied).
 
-    Builds a client from the environment if one is not supplied.
+    Builds a client from the environment if one is not supplied. `on_refresh`
+    is passed to from_env() to persist the rotated refresh token.
     """
     own_client = client is None
-    client = client or NationBuilderV2Client.from_env()
+    client = client or NationBuilderV2Client.from_env(on_refresh=on_refresh)
     try:
         records = client.fetch_all_signups(
             extra_fields=EXTRA_FIELDS,
@@ -135,6 +137,7 @@ def extract_filtered_signups(
     client: NationBuilderV2Client | None = None,
     concurrency: int = 20,
     progress=None,
+    on_refresh=None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Pull all signups, project, and apply the inclusion filter.
 
@@ -142,7 +145,8 @@ def extract_filtered_signups(
     excluded rows by reason.
     """
     rows = extract_all_signups(
-        client=client, concurrency=concurrency, progress=progress
+        client=client, concurrency=concurrency, progress=progress,
+        on_refresh=on_refresh,
     )
     kept: list[dict[str, Any]] = []
     stats = {

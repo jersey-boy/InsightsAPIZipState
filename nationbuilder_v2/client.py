@@ -88,12 +88,19 @@ class NationBuilderV2Client:
             )
 
     @classmethod
-    def from_env(cls, timeout: float = 30.0) -> "NationBuilderV2Client":
+    def from_env(
+        cls,
+        timeout: float = 30.0,
+        on_refresh: Callable[[str], None] | None = None,
+    ) -> "NationBuilderV2Client":
         """Build a client from the NATIONBUILDER_* environment variables.
 
         Requires NATIONBUILDER_SLUG, NATIONBUILDER_CLIENT_ID,
         NATIONBUILDER_CLIENT_SECRET, and NATIONBUILDER_REFRESH_TOKEN. Falls back
         to NATIONBUILDER_ACCESS_TOKEN_V2 if no refresh token is set.
+
+        `on_refresh` persists the rotated refresh token; pass a Secrets-Manager
+        writer in Lambda. Defaults to rewriting the local .env.
         """
 
         def _req(name: str) -> str:
@@ -108,6 +115,7 @@ class NationBuilderV2Client:
             client_secret=_req("NATIONBUILDER_CLIENT_SECRET"),
             refresh_token=os.getenv("NATIONBUILDER_REFRESH_TOKEN"),
             access_token=os.getenv("NATIONBUILDER_ACCESS_TOKEN_V2"),
+            on_refresh=on_refresh,
             timeout=timeout,
         )
 

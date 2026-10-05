@@ -12,10 +12,13 @@
       "Resource": "arn:aws:logs:eu-west-2:068238656047:*"
     },
     {
-      "Sid": "ReadSecret",
+      "Sid": "ReadWriteV2Secret",
       "Effect": "Allow",
-      "Action": "secretsmanager:GetSecretValue",
-      "Resource": "arn:aws:secretsmanager:eu-west-2:068238656047:secret:nb/insights/prod-*"
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:eu-west-2:068238656047:secret:nb/v2/prod-*"
     },
     {
       "Sid": "S3ReadWrite",

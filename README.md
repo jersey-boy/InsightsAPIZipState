@@ -1,49 +1,85 @@
 # InsightsAPIZipState
 
-Python tools that access the **NationBuilder Insights** reporting system (built
-on Tableau) via the Tableau REST API, and validate member ZIP / state / federal
-district data integrity.
+Python tooling that validates Democrats Abroad member ("signup") data integrity
+by pulling every signup from the **NationBuilder V2 API** and checking two things
+per record:
+
+1. **ZIP vs. state** — does the member's registered ZIP code belong to their
+   registered state?
+2. **Federal district vs. state** — does the member's federal congressional
+   district belong to their registered state?
+
+NationBuilder V2 (OAuth 2.0) is the sole data source. (An earlier version read
+from NationBuilder Insights/Tableau and the V1 API; that code has been removed.)
 
 ## Setup
 
-1. Create and activate a virtual environment, then install dependencies:
+1. Create a virtual environment and install dependencies:
 
    ```bash
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -r requirements.txt
+   python -m venv .venv
+   .venv/Scripts/python -m pip install -r requirements.txt   # Windows
+   # .venv/bin/python -m pip install -r requirements.txt     # macOS/Linux
    ```
 
-2. Copy `.env.example` to `.env` and fill in your NationBuilder Insights
-   personal access token and site details:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   `.env` is gitignored and must never be committed.
+2. Copy `.env.example` to `.env` and fill in your NationBuilder V2 OAuth
+   credentials (see [`V2_OAUTH_SETUP.md`](V2_OAUTH_SETUP.md) for how to obtain
+   them). `.env` is gitignored and must never be committed.
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `nb_insights.py` | Shared connection helper. Loads `.env`, provides `insights_connection()` context manager. Run directly for a sign-in smoke test. |
-| `list_reports.py` | Lists all Insights workbooks, views, and data sources; writes each to CSV. |
-| `pull_zip_state_federal.py` | Pulls the "Zip State Federal District" view, runs two independent checks (ZIP vs. state, federal district vs. state), writes the full dataset plus a problems report per check, and — when NationBuilder credentials are set — cross-checks against the NB API and writes an Insights-vs-NationBuilder discrepancy report. Also the Lambda entry point. |
-| `sources.py` | Original sample: lists data source fields. |
+| `validate_zip_fed.py` | The pipeline. Pulls all signups from NationBuilder V2, filters, runs the two checks, writes a full dataset plus a problems report per check, and (optionally) uploads to S3 and emails the reports. Local entry point `main()`; AWS Lambda entry point `handler()`. |
+| `nationbuilder_v2/` | NationBuilder V2 API client: OAuth 2.0 refresh-token flow, parallel full-nation pull, and the signup extractor/filter. |
+| `build_lambda_zip.py` | Builds the Lambda deployment zip (deps as Linux wheels; pandas/numpy come from the AWS-managed pandas layer). |
 
-Run any script with:
+Run the pipeline locally with:
 
 ```bash
-.venv/bin/python <script>.py
+.venv/Scripts/python validate_zip_fed.py
 ```
+
+## Data source: NationBuilder V2
+
+The pipeline authenticates to NationBuilder V2 with **OAuth 2.0** and pulls every
+signup via `/api/v2/signups?extra_fields[signups]=registered_address,custom_values`.
+For each signup it projects:
+
+| Field | V2 source |
+|-------|-----------|
+| `signup_id` | `data[].id` |
+| `registered_state` | `attributes.registered_address.state` |
+| `registered_zip` | `attributes.registered_address.zip` (normalized to 5 digits) |
+| `federal_district` | `attributes.federal_district` (e.g. `NY13`; prefix `NY` is the state) |
+| `us_citizen` | `attributes.custom_values.us_citizen` (custom field) |
+| `date_last_verified` | `attributes.custom_values.date_last_verified` (custom field) |
+
+`registered_address` is the member's US voter-registration address (not
+`primary_address`, which for Democrats Abroad members is usually overseas).
+
+**Pagination / performance:** V2 caps `page[size]` at 100 (~1,886 pages for the
+full ~188k nation). Since V2 uses page-*number* pagination, pages are fetched in
+parallel (default 20 workers), so a full pull completes in ~4–5 minutes. See
+[`V2_OAUTH_SETUP.md`](V2_OAUTH_SETUP.md) for the OAuth flow and schema details.
+
+### Inclusion filter
+
+Before validation, signups are filtered to the population that should be checked.
+A row is **kept** only when all three hold:
+
+- registered ZIP is non-blank,
+- `us_citizen` is truthy, and
+- `date_last_verified` is non-blank.
+
+The run reports how many rows were excluded by each reason.
 
 ## Validation output
 
-`pull_zip_state_federal.py` runs two independent checks and produces three report
-pairs plus the full dataset — six CSV/XLSX files, or eight when the NationBuilder
-cross-check is enabled (all gitignored, as they contain member PII):
+`validate_zip_fed.py` runs the two checks and produces six files (all gitignored,
+as they contain member PII):
 
-**Full dataset** (every record, both problem-flag columns):
+**Full dataset** (every kept record, both problem-flag columns):
 
 - `zip_state_federal_district.csv` / `.xlsx` — the `.xlsx` types the ZIP column
   as text so Excel keeps leading zeros.
@@ -56,69 +92,38 @@ cross-check is enabled (all gitignored, as they contain member PII):
 
 - `federal_district_problems.csv` / `.xlsx` — carries the
   `federal_district_problem` flag.
-- When NationBuilder credentials are configured (`NATIONBUILDER_SLUG` /
-  `NATIONBUILDER_ACCESS_TOKEN`), this report also carries two cross-check
-  columns: `nb_federal_district` (the authoritative value from the NationBuilder
-  V1 API for that `signup_id`) and `federal_district_match`
-  (`MATCH`/`MISMATCH`/blank). The Insights `federal_district` is unreliable, so
-  the NB value is looked up for each flagged record (one API call per flagged
-  `signup_id`, run in parallel) and shown side by side. The lookup is a no-op
-  when NB credentials are unset.
 
-**Report 3 — Insights vs NationBuilder** (only when NB credentials are set):
-
-- `insights_vs_nationbuilder.csv` / `.xlsx` — compares three fields —
-  `state`, `zip`, and `federal_district` — between Insights and NationBuilder for
-  the **union of all flagged records** (anything flagged by either test). Each
-  field has its own `*_match` flag (`MATCH`/`MISMATCH`/blank-when-not-comparable),
-  and the report keeps **only records where at least one field differs**. The NB
-  values come from the member's `registered_address` (state, zip) and the
-  top-level `federal_district`. This catches discrepancies the per-test reports
-  miss — e.g. a ZIP or state that disagrees between the two systems.
-
-The two per-test problem reports are independent; a member flagged by both checks
-appears in both files. A passing check leaves the flag blank. Problem messages
-are explicit, e.g. `ZIP STATE PROBLEM. SHOULD BE VA`,
-`ZIP STATE PROBLEM. ZIP IS BLANK`, `ZIP STATE PROBLEM. ZIP NOT FOUND`,
-`FEDERAL DISTRICT PROBLEM`, `FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK`.
+The two problem reports are independent; a member flagged by both appears in both
+files. A passing check leaves the flag blank. Problem messages are explicit, e.g.
+`ZIP STATE PROBLEM. SHOULD BE VA`, `ZIP STATE PROBLEM. ZIP IS BLANK`,
+`ZIP STATE PROBLEM. ZIP NOT FOUND`, `FEDERAL DISTRICT PROBLEM`,
+`FEDERAL DISTRICT PROBLEM. FEDERAL DISTRICT IS BLANK`.
 
 ### Output location and S3 upload
 
-By default the files are written to the current directory. Two optional
-environment variables (see `.env.example`) change this:
+By default files are written to the current directory. Two optional env vars (see
+`.env.example`) change this:
 
-- `OUTPUT_DIR` — directory to write into. Defaults to `.`; set it to `/tmp` when
-  running in AWS Lambda (the only writable path there).
+- `OUTPUT_DIR` — directory to write into. Defaults to `.`; set to `/tmp` in AWS
+  Lambda (the only writable path).
 - `S3_BUCKET` (+ optional `S3_PREFIX`, `S3_REGION`) — when set, every output file
-  is uploaded to `s3://<bucket>/<prefix>/<filename>`. Object names are
-  **date-stamped** with the run date, e.g. `zip_state_problems_YYYYMMDD.csv`, so
-  a history accumulates in the bucket (local file names stay undated). A
-  presigned URL is also generated per object (valid up to 7 days; tune with
-  `PRESIGN_EXPIRY_SECONDS`) and kept in the run result. When unset, output stays
-  local only.
-
-Email delivery (see below) sends the reports as **attachments**, so S3 is not
-required for email — the two are independent.
+  is uploaded to `s3://<bucket>/<prefix>/<name>`. Object names are
+  **date-stamped** with the run date, e.g. `zip_state_problems_YYYYMMDD.csv`, so a
+  history accumulates in the bucket (local file names stay undated). A presigned
+  URL is also generated per object. When unset, output stays local only.
 
 No AWS keys are configured in this project: locally `boto3` uses your AWS
 profile/environment, and in Lambda it uses the function's IAM execution role.
-`boto3` is listed in `requirements.txt` for local use; it ships in the Lambda
-runtime already, so it does not need to be packaged for deployment.
 
 ### Email notification
 
 When `SES_SENDER` is set and a recipient list exists (`RECIPIENTS_S3_URI` or a
 local `RECIPIENTS_FILE`, one address per line, `#` comments), the run emails the
-**problem reports as file attachments** via Amazon SES — the two per-test reports
-plus the Insights-vs-NationBuilder report when the NB cross-check is enabled. The
-full dataset is never attached (it is uploaded to S3 for reference). Attachments
-are named with the run date. The body carries the summary counts and the `EMAIL_MESSAGE` note.
-An attachment is skipped (with a note in the body) if it would push the message
-past the SES ~10 MB limit. Email is a no-op unless `SES_SENDER` is set.
-
-> An earlier version emailed presigned S3 **links** instead of attachments. That
-> approach is preserved in `_build_link_email()` for easy revert (see
-> `DEPLOY.md`).
+two **problem reports as file attachments** via Amazon SES — the full dataset is
+never attached (it is uploaded to S3 for reference). Attachments are named with
+the run date. The body carries the summary counts and the `EMAIL_MESSAGE` note.
+An attachment is skipped (with a note in the body) if it would exceed the SES
+~10 MB limit. Email is a no-op unless `SES_SENDER` is set.
 
 ## ZIP reference file
 
@@ -126,8 +131,9 @@ past the SES ~10 MB limit. Email is a no-op unless `SES_SENDER` is set.
 > means, see **[`ZIP_REFERENCE_AND_ERRORS.md`](ZIP_REFERENCE_AND_ERRORS.md)**.
 
 ZIP → state validation uses the USPS **`ZIP_Locale_Detail.xlsx`** workbook, which
-must sit alongside the scripts (it is gitignored). The workbook has three sheets
-that are merged into a single ZIP → state lookup (~41,500 ZIPs):
+must sit alongside the scripts locally (gitignored) or be sourced from S3 via
+`ZIP_LOOKUP_S3_URI`. The workbook has three sheets merged into a single
+ZIP → state lookup (~41,500 ZIPs):
 
 | Sheet | Header row | Notes |
 |-------|-----------|-------|
@@ -136,41 +142,28 @@ that are merged into a single ZIP → state lookup (~41,500 ZIPs):
 | `Other`  | 3 | Remaining ZIPs. |
 
 Using `Detail` alone omits ~195 valid ZIPs that live on `Unique`/`Other`, so all
-three are combined.
+three are combined. `ZIP_MODE` (`delivery` default, or `physical`) selects which
+ZIP column keys the lookup.
 
-### Physical vs. delivery ZIP
+## Running as an AWS Lambda
 
-The `ZIP_MODE` constant in `pull_zip_state_federal.py` selects which ZIP keys the
-lookup:
-
-- `"delivery"` (default) — keyed by the delivery ZIP. Broadest coverage; only ~50
-  member ZIPs end up `ZIP NOT FOUND` (placeholder / unassigned ZIPs).
-- `"physical"` — keyed by the physical (facility) ZIP. Narrower coverage, so many
-  valid member ZIPs get flagged `ZIP NOT FOUND`; use only if you specifically want
-  to validate against the physical facility ZIP.
-
-The workbook only carries a *physical* state, so both modes validate the ZIP
-against that physical state — the mode only changes which ZIP column is the key.
+`validate_zip_fed.handler` is the Lambda entry point. It writes outputs to
+`/tmp`, uploads them to S3, emails the reports, and loads its NationBuilder OAuth
+credentials from AWS Secrets Manager (rotating the refresh token back into the
+secret each run). Build the deployment zip with `python build_lambda_zip.py`
+(bundles the non-pandas deps as Linux wheels; pandas/numpy come from the
+AWS-managed pandas layer). See **[`DEPLOY.md`](DEPLOY.md)** for the full
+step-by-step.
 
 ## Spec
 
 Full requirements, design, and tasks live in
 `.kiro/specs/zip-state-federal-validation/`.
 
-## Running as an AWS Lambda
-
-`pull_zip_state_federal.handler` is the Lambda entry point. It writes outputs to
-`/tmp`, uploads them to S3, and returns presigned download URLs. Build the
-deployment zip with `python build_lambda_zip.py` (bundles the non-pandas deps as
-Linux wheels; pandas/numpy come from the AWS-managed pandas layer). See
-**[`DEPLOY.md`](DEPLOY.md)** for the full step-by-step (IAM, Secrets Manager,
-layer ARN, scheduling); a container-image path is included there as a fallback.
-
 ## Notes
 
-- Requires the `ZIP_Locale_Detail.xlsx` reference workbook alongside the scripts
-  (see [ZIP reference file](#zip-reference-file)). It is gitignored.
-- Set `NB_INSIGHTS_API_VERSION=3.23` in `.env` to match the server (the server
-  is on REST API 3.23; a lower value logs a warning and can break sign-out).
-- On Windows, run scripts with `.venv\Scripts\python.exe <script>.py` instead of
-  the `.venv/bin/python` shown above.
+- Requires the `ZIP_Locale_Detail.xlsx` reference workbook (local or via
+  `ZIP_LOOKUP_S3_URI`). It is gitignored.
+- The full pull holds ~188k records in memory, so the Lambda is provisioned at
+  3008 MB (and 900s timeout).
+- On Windows, run scripts with `.venv\Scripts\python.exe <script>.py`.

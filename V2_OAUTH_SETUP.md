@@ -170,10 +170,15 @@ build:
   the stored access token and **always refresh at the start of a run** (one extra
   call, always-valid token). Alternatively, track `created_at + expires_in` and
   only refresh when near expiry.
-- **Store in Secrets Manager**, same pattern as the existing secret
-  (`nb/insights/prod` or a new secret), loaded via the existing
-  `_load_secret_into_env()` mechanism. Keys would be `NATIONBUILDER_CLIENT_ID`,
-  `NATIONBUILDER_CLIENT_SECRET`, `NATIONBUILDER_REFRESH_TOKEN`.
+- **Stored in Secrets Manager** as `nb/v2/prod`, loaded at startup via
+  `_load_secret_into_env()` in `validate_zip_fed.py`. Keys: `NATIONBUILDER_SLUG`,
+  `NATIONBUILDER_CLIENT_ID`, `NATIONBUILDER_CLIENT_SECRET`,
+  `NATIONBUILDER_REFRESH_TOKEN`, `NATIONBUILDER_REDIRECT_URI`. The function writes
+  the rotated refresh token back to this secret each run (requires
+  `secretsmanager:PutSecretValue`).
+
+> Status: this is implemented and deployed — the live `zipstatefed-validation`
+> Lambda loads from `nb/v2/prod` and rotates the token in place.
 
 ---
 
@@ -262,27 +267,30 @@ could cut the pull dramatically versus all ~188k; worth exploring in the build.
 
 ---
 
-## 6. Build plan (next steps — not yet done)
+## 6. Implementation status (done)
 
-The actual implementation is intentionally left for the focused build session:
+The build is complete and deployed. For reference:
 
-1. **Add a V2 client** (new module): Bearer auth, `/api/v2` base, JSON:API
-   parsing, pagination via `links.next`, and a `refresh_access_token()` using the
-   refresh-token flow in section 4.
-2. **Pull all signups** with `extra_fields[signups]=registered_address`, project
-   to `signup_id`, `registered_state`, `registered_zip` (normalized),
-   `federal_district`.
-3. **Run the two original checks** on that data:
-   - ZIP vs. state (reuse the `ZIP_Locale_Detail.xlsx` three-sheet lookup).
-   - Federal district prefix vs. state.
-4. **Drop all Insights/Tableau code**: remove `tableau-api-lib`, `nb_insights.py`,
-   the Insights view pull, and the V1 cross-check (NB is now the only source, so
-   there is no "Insights vs NB" comparison — just validate NB's own fields).
-5. **Keep** the output/report structure (CSV+XLSX, dated S3 objects, SES email
-   attachments) and the Lambda/packaging/scheduling scaffolding; just repoint the
-   data source.
-6. **Secrets:** move `NATIONBUILDER_CLIENT_ID/SECRET/REFRESH_TOKEN` into Secrets
-   Manager for the deployed Lambda; `.env` holds them locally.
+1. **V2 client** — `nationbuilder_v2/client.py`: Bearer auth, `/api/v2` base,
+   `refresh_access_token()` (section 4), and a parallel paged pull
+   (`fetch_all_signups`). (Note: NationBuilder's `links.next` is a root-relative
+   path and the per-page pull uses page-number pagination fetched in parallel.)
+2. **Pull + project** — `nationbuilder_v2/extract.py` pulls all signups with
+   `extra_fields[signups]=registered_address,custom_values` and projects
+   `signup_id`, `registered_state`, `registered_zip` (5-digit), `federal_district`,
+   plus `us_citizen` + `date_last_verified` (custom fields) for the filter.
+3. **Two checks** — `validate_zip_fed.py` runs ZIP-vs-state (merged
+   `ZIP_Locale_Detail.xlsx` lookup) and federal-district-prefix-vs-state.
+4. **Insights/Tableau and V1 removed** — `tableau-api-lib`, `nb_insights.py`, the
+   old Insights pull, and the V1 `nationbuilder` package are deleted. V2 is the
+   only source.
+5. **Reports/S3/email/Lambda** — CSV+XLSX, date-stamped S3 objects, SES email
+   attachments, and the Lambda packaging/scheduling are all in place.
+6. **Secrets** — `NATIONBUILDER_*` creds live in the `nb/v2/prod` Secrets Manager
+   secret (loaded at startup; rotated refresh token written back); `.env` holds
+   them locally.
+
+See README.md and DEPLOY.md for usage and the full deployment.
 
 ---
 

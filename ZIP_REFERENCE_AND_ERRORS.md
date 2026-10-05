@@ -7,7 +7,7 @@ This document explains two things:
 2. What each problem message in the output means now that the script uses this
    reference.
 
-It reflects the behaviour of `pull_zip_state_federal.py` in **delivery mode**
+It reflects the behaviour of `validate_zip_fed.py` in **delivery mode**
 (`ZIP_MODE = "delivery"`), which is the current default.
 
 > Note: this is my (the developer's) working understanding of the USPS
@@ -96,12 +96,12 @@ The script builds a single Python dictionary `{ zip:int -> state:str }`:
    is authoritative; `Unique`/`Other` only fill in ZIPs `Detail` doesn't
    already have).
 
-**Why ZIPs are stored as integers.** The Insights view stores the member ZIP
-as a number (`registered_zip_clean`, e.g. `1002`), and the reference file also
-stores ZIPs as numbers (`1002`, not `01002`). Converting both sides to integers
-makes the leading zero a non-issue — `01002` and `1002` compare equal. The ZIP
-is only re-formatted back to a zero-padded 5-digit string (`01002`) for display
-in the output files, *after* the comparison has run.
+**Why ZIPs are matched as integers.** The member ZIP (from the NationBuilder V2
+`registered_address.zip`, normalized to its first five digits) and the reference
+file's ZIPs are both compared as integers, so the leading zero is a non-issue —
+`01002` and `1002` compare equal. The ZIP is re-formatted to a zero-padded
+5-digit string (`01002`) for display in the output files, *after* the comparison
+has run.
 
 The combined lookup currently holds **~41,485 ZIP keys** in delivery mode.
 
@@ -212,7 +212,7 @@ which is why the not-found count is now much lower and mostly genuine junk.
 ## 4. Switching modes
 
 To validate against the physical facility ZIP instead of the delivery ZIP, set
-this one constant near the top of `pull_zip_state_federal.py`:
+the `ZIP_MODE` constant (or env var) used by `validate_zip_fed.py`:
 
 ```python
 ZIP_MODE = "physical"   # default is "delivery"

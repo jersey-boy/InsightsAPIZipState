@@ -27,6 +27,59 @@ from nationbuilder_v2.extract import extract_filtered_signups
 # config / Secrets Manager). Must run before the env vars below are read.
 load_dotenv()
 
+
+def _load_secret_into_env() -> None:
+    """Populate NATIONBUILDER_* env vars from AWS Secrets Manager, if configured.
+
+    When NATIONBUILDER_SECRET_ID is set (secret name or ARN), the secret's JSON
+    value is read and each key copied into os.environ *without* overwriting an
+    existing variable — so local `.env`/shell values still win, and in Lambda
+    the secret supplies the OAuth credentials. No-op when unset.
+    """
+    secret_id = os.getenv("NATIONBUILDER_SECRET_ID")
+    if not secret_id:
+        return
+    import json
+
+    import boto3
+
+    region = os.getenv("NATIONBUILDER_SECRET_REGION") or os.getenv("AWS_REGION")
+    client = boto3.client("secretsmanager", region_name=region or None)
+    raw = client.get_secret_value(SecretId=secret_id).get("SecretString") or ""
+    raw = raw.lstrip("\ufeff")
+    if raw.strip():
+        for key, value in json.loads(raw).items():
+            os.environ.setdefault(key, str(value))
+
+
+_load_secret_into_env()
+
+
+def _persist_refresh_token(new_refresh: str) -> None:
+    """Persist a rotated refresh token.
+
+    In Lambda (NATIONBUILDER_SECRET_ID set) write it back into the JSON secret so
+    the next scheduled run can use it — /tmp and .env are not durable there.
+    Locally (no secret id) fall back to rewriting .env.
+    """
+    secret_id = os.getenv("NATIONBUILDER_SECRET_ID")
+    if secret_id:
+        import json
+
+        import boto3
+
+        region = os.getenv("NATIONBUILDER_SECRET_REGION") or os.getenv("AWS_REGION")
+        sm = boto3.client("secretsmanager", region_name=region or None)
+        raw = sm.get_secret_value(SecretId=secret_id).get("SecretString") or "{}"
+        data = json.loads(raw.lstrip("\ufeff") or "{}")
+        data["NATIONBUILDER_REFRESH_TOKEN"] = new_refresh
+        sm.put_secret_value(SecretId=secret_id, SecretString=json.dumps(data))
+    else:
+        from nationbuilder_v2.client import _persist_refresh_token_to_env
+
+        _persist_refresh_token_to_env(new_refresh)
+    os.environ["NATIONBUILDER_REFRESH_TOKEN"] = new_refresh
+
 # -- Output location --------------------------------------------------------
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", ".")
 
@@ -288,7 +341,9 @@ def run() -> dict:
         reference_file = resolve_reference_file()
         zip_to_state = build_zip_to_state(reference_file, ZIP_MODE)
 
-        rows, filter_stats = extract_filtered_signups(concurrency=NB_LOOKUP_CONCURRENCY)
+        rows, filter_stats = extract_filtered_signups(
+            concurrency=NB_LOOKUP_CONCURRENCY, on_refresh=_persist_refresh_token
+        )
         df = pd.DataFrame(rows, columns=EXTRACT_COLUMNS)
 
         # Run the two checks.
