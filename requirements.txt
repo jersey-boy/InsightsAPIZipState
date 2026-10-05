@@ -1,14 +1,12 @@
-tableau-api-lib==0.1.45
 pandas==2.2.2
 python-dotenv==1.0.1
 openpyxl==3.1.5
 
 # For local S3 uploads / presigned URLs. Already present in the AWS Lambda
 # runtime, so it does not need to be packaged for deployment — it is listed
-# here only so local runs (OUTPUT to S3) work.
+# here only so local runs (output to S3) work.
 boto3==1.35.49
 
-# HTTP client used by the vendored `nationbuilder` package to call the
-# NationBuilder V1 REST API (federal_district cross-check). Must be packaged
-# into the Lambda zip (it is not in the base runtime).
+# HTTP client used by the nationbuilder_v2 package to call the NationBuilder
+# V2 REST API. Must be packaged into the Lambda zip (not in the base runtime).
 httpx==0.27.2

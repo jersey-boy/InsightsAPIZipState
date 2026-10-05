@@ -2,7 +2,7 @@
 Build a Lambda deployment zip for the "zip + AWS-managed pandas layer" path.
 
 This produces `lambda_deploy.zip` containing:
-  * the application source (nb_insights.py, pull_zip_state_federal.py)
+  * the application source (validate_zip_fed.py + the nationbuilder_v2 package)
   * the dependencies that are NOT in the AWS-managed pandas layer, installed as
     Linux (manylinux) wheels so they run on the Lambda runtime.
 
@@ -31,15 +31,14 @@ BUILD_DIR = ROOT / "build" / "package"
 ZIP_PATH = ROOT / "lambda_deploy.zip"
 
 # Application source files to include at the zip root.
-SOURCE_FILES = ["nb_insights.py", "pull_zip_state_federal.py"]
+SOURCE_FILES = ["validate_zip_fed.py"]
 
 # Application packages (directories) to include at the zip root.
-SOURCE_PACKAGES = ["nationbuilder"]
+SOURCE_PACKAGES = ["nationbuilder_v2"]
 
 # Dependencies to bundle. pandas/numpy (managed layer) and boto3 (runtime) are
 # deliberately omitted. These are the pins from requirements.txt minus those.
 DEPENDENCIES = [
-    "tableau-api-lib==0.1.45",
     "openpyxl==3.1.5",
     "python-dotenv==1.0.1",
     "httpx==0.27.2",
@@ -49,9 +48,7 @@ DEPENDENCIES = [
 #   pandas, numpy  -> AWS-managed pandas layer (AWSSDKPandas-Python312)
 #   boto3, botocore, s3transfer, jmespath, dateutil, six, urllib3 -> also in
 #     that layer / the Lambda runtime.
-# tableau-api-lib lists pandas as a dependency, so pip installs it transitively;
-# we prune these top-level dirs after install to avoid shipping (and shadowing)
-# the layer's copies. Pruning by import-name prefix keeps it simple and safe.
+# Pruned after install to avoid shipping (and shadowing) the layer's copies.
 PROVIDED_BY_LAYER = ["pandas", "numpy"]
 
 # Lambda x86_64 / Python 3.12 wheel target.
@@ -86,9 +83,9 @@ def pip_install_linux_wheels() -> None:
 def prune_layer_packages() -> None:
     """Delete packages provided by the AWS-managed layer from BUILD_DIR.
 
-    tableau-api-lib depends on pandas (which pulls numpy), so pip installs them
-    transitively. Shipping them would bloat the zip and shadow the layer, so we
-    remove their package dirs and *.dist-info / *.libs folders here.
+    Some deps pull pandas/numpy transitively. Shipping them would bloat the zip
+    and shadow the layer, so we remove their package dirs and *.dist-info /
+    *.libs folders here.
     """
     removed = []
     for name in PROVIDED_BY_LAYER:

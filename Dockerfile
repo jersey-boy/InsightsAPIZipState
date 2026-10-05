@@ -14,7 +14,8 @@ RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt
 # Copy the application source. The ZIP reference workbook is intentionally NOT
 # bundled — it is fetched from S3 at runtime via ZIP_LOOKUP_S3_URI (see
 # .dockerignore and DEPLOY.md).
-COPY nb_insights.py pull_zip_state_federal.py ${LAMBDA_TASK_ROOT}/
+COPY validate_zip_fed.py ${LAMBDA_TASK_ROOT}/
+COPY nationbuilder_v2 ${LAMBDA_TASK_ROOT}/nationbuilder_v2
 
-# Lambda calls <module>.<function>. handler() lives in pull_zip_state_federal.
-CMD ["pull_zip_state_federal.handler"]
+# Lambda calls <module>.<function>. handler() lives in validate_zip_fed.
+CMD ["validate_zip_fed.handler"]
