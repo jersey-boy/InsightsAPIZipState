@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "aws-docs": {
-      "command": "uvx",
+      "command": "C:\\Users\\rick_\\.local\\bin\\uvx.exe",
       "args": ["awslabs.aws-documentation-mcp-server@latest"],
       "env": { "FASTMCP_LOG_LEVEL": "ERROR" },
       "disabled": false,
