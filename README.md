@@ -150,10 +150,22 @@ ZIP column keys the lookup.
 `validate_zip_fed.handler` is the Lambda entry point. It writes outputs to
 `/tmp`, uploads them to S3, emails the reports, and loads its NationBuilder OAuth
 credentials from AWS Secrets Manager (rotating the refresh token back into the
-secret each run). Build the deployment zip with `python build_lambda_zip.py`
-(bundles the non-pandas deps as Linux wheels; pandas/numpy come from the
-AWS-managed pandas layer). See **[`DEPLOY.md`](DEPLOY.md)** for the full
-step-by-step.
+secret each run).
+
+Deployment is **infrastructure-as-code via Serverless Framework v3**
+(`serverless.yml`), deployed automatically by **GitHub Actions** on every push to
+`main` (`.github/workflows/deploy.yml`). The stack owns the function, its IAM
+role, log group, and the nightly schedule; the S3 bucket and the Secrets Manager
+secret are referenced, not managed (they hold live state). To deploy locally:
+
+```bash
+npm install                                   # Serverless v3 (once)
+python build_lambda_zip.py                    # build the artifact
+npx serverless deploy --stage prod --region eu-west-2
+```
+
+See **[`DEPLOY.md`](DEPLOY.md)** for the full guide (required GitHub secrets, the
+one-time S3/secret/SES prerequisites, and migrating from a hand-built function).
 
 ## Spec
 

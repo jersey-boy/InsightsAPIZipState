@@ -30,6 +30,10 @@ pull_zip_state_federal.status.txt
 build/
 lambda_deploy.zip
 
+# Node / Serverless Framework
+node_modules/
+.serverless/
+
 # Lambda invoke output — contains presigned URLs with temporary tokens.
 aws/response.json
 

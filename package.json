@@ -1,0 +1,14 @@
+{
+  "name": "zipstatefed",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deployment tooling for the ZIP/state/federal-district validation Lambda (Serverless Framework v3).",
+  "scripts": {
+    "build": "python build_lambda_zip.py",
+    "deploy": "npm run build && serverless deploy",
+    "remove": "serverless remove"
+  },
+  "devDependencies": {
+    "serverless": "^3.39.0"
+  }
+}

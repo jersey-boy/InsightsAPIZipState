@@ -1,0 +1,63 @@
+name: Deploy (Serverless)
+
+# Deploys the ZIP/state/federal-district validation Lambda via Serverless v3.
+# Triggers: every push to main, or manually via the Actions tab.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   AWS_ACCESS_KEY_ID       - IAM user key with rights to deploy the stack
+#   AWS_SECRET_ACCESS_KEY   - its secret
+#   SERVERLESS_ACCESS_KEY   - Serverless dashboard access key (v3 login)
+# AWS_REGION is set below (eu-west-2); override here if you move regions.
+#
+# NOTE (future upgrade): static IAM keys are used for simplicity. Prefer GitHub
+# OIDC (a GitHub -> AWS trust role, no long-lived keys stored in GitHub) when
+# you harden this — swap the env creds below for aws-actions/configure-aws-
+# credentials with role-to-assume + permission on the workflow:
+#   permissions: { id-token: write, contents: read }
+
+on:
+  push:
+    branches: [main]
+    # Skip deploys for docs-only / notes changes that can't affect the function.
+    paths-ignore:
+      - "**/*.md"
+      - "Chats/**"
+  workflow_dispatch: {}
+
+concurrency:
+  # Never let two deploys run at once against the same stack.
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: eu-west-2
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      SERVERLESS_ACCESS_KEY: ${{ secrets.SERVERLESS_ACCESS_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the Lambda artifact (Linux wheels)
+        # Produces lambda_deploy.zip exactly as a local build would. The runner
+        # is Linux, so the manylinux wheel install is native here.
+        run: python build_lambda_zip.py
+
+      - name: Install Serverless (pinned v3)
+        run: npm ci
+
+      - name: Deploy
+        run: npx serverless deploy --stage prod --region "$AWS_REGION" --verbose

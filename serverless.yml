@@ -1,0 +1,104 @@
+# Serverless Framework v3 — ZIP / state / federal-district validation Lambda.
+#
+# Infrastructure-as-code for the validation function: Serverless/CloudFormation
+# owns the Lambda, its IAM execution role, the log group, and the nightly
+# schedule. The S3 reports bucket and the Secrets Manager secret are NOT managed
+# here — they already exist and hold live state (report history + the rotating
+# NationBuilder V2 refresh token), so they are only *referenced* by name. A
+# `serverless remove` must never wipe report history or the live token.
+#
+# Packaging: we deploy a PRE-BUILT artifact produced by build_lambda_zip.py
+# (bundles the non-pandas deps as Linux wheels; pandas/numpy come from the
+# AWS-managed pandas layer). Run `python build_lambda_zip.py` before
+# `serverless deploy` (the GitHub Actions workflow does this for you).
+#
+# NOTE (future upgrades):
+#  - Serverless Framework v4 needs a licensed SERVERLESS_ACCESS_KEY and has some
+#    syntax changes; this config targets v3.
+#  - build_lambda_zip.py could be replaced by the serverless-python-requirements
+#    plugin (needs Docker for the Linux wheels).
+
+service: zipstatefed
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: ${opt:region, "eu-west-2"}
+  stage: ${opt:stage, "prod"}
+  # The full V2 pull holds ~188k signup records plus a pandas DataFrame in
+  # memory; 1024 MB OOM-kills, 3008 MB runs comfortably (and gives ~2 vCPU).
+  # The parallel V2 pull completes well inside 900 s.
+  memorySize: 3008
+  timeout: 900
+  environment:
+    OUTPUT_DIR: /tmp
+    S3_BUCKET: ${self:custom.bucket}
+    S3_PREFIX: zip-state-reports/
+    S3_REGION: ${self:provider.region}
+    ZIP_LOOKUP_S3_URI: s3://${self:custom.bucket}/refs/ZIP_Locale_Detail.xlsx
+    SES_SENDER: ${self:custom.sesSender}
+    SES_REGION: ${self:provider.region}
+    RECIPIENTS_S3_URI: s3://${self:custom.bucket}/config/recipients.txt
+    NATIONBUILDER_SECRET_ID: ${self:custom.secretId}
+    NATIONBUILDER_SECRET_REGION: ${self:provider.region}
+  iam:
+    role:
+      statements:
+        # Get + Put: the function reads the OAuth creds AND writes the rotated
+        # refresh token back on each run.
+        - Sid: ReadWriteV2Secret
+          Effect: Allow
+          Action:
+            - secretsmanager:GetSecretValue
+            - secretsmanager:PutSecretValue
+          Resource: arn:aws:secretsmanager:${self:provider.region}:${self:custom.accountId}:secret:${self:custom.secretId}-*
+        - Sid: S3ReadWrite
+          Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+          Resource: arn:aws:s3:::${self:custom.bucket}/*
+        - Sid: SendEmail
+          Effect: Allow
+          Action:
+            - ses:SendEmail
+            - ses:SendRawEmail
+          Resource: "*"
+          Condition:
+            StringEquals:
+              ses:FromAddress: ${self:custom.sesSender}
+
+custom:
+  # AWS account id, hardcoded on purpose. Using the ${aws:accountId} variable
+  # would make Serverless call STS during variable resolution; hardcoding avoids
+  # that credential-dependent lookup at deploy time. Not sensitive — it already
+  # appears in resource ARNs.
+  accountId: "068238656047"
+  # Existing resources (NOT created by this stack) — referenced by name.
+  bucket: zipstatefed-reports-068238656047
+  secretId: nb/v2/prod
+  sesSender: insights-reports@lategothikdata.com
+  # AWS-managed pandas layer (eu-west-2 / py3.12 / x86_64). pandas + numpy come
+  # from here; build_lambda_zip.py prunes them from the artifact.
+  pandasLayer: arn:aws:lambda:eu-west-2:336392948345:layer:AWSSDKPandas-Python312:31
+
+package:
+  # Deploy the pre-built zip from build_lambda_zip.py as-is; disable Serverless's
+  # own packaging so it ships exactly our artifact.
+  artifact: lambda_deploy.zip
+
+functions:
+  validation:
+    name: zipstatefed-validation
+    handler: validate_zip_fed.handler
+    description: ZIP/state + federal-district validation from NationBuilder V2; emails the problem reports.
+    layers:
+      - ${self:custom.pandasLayer}
+    events:
+      # Nightly at 06:00 UTC (EventBridge). Serverless creates the schedule rule
+      # + invoke permission as part of the stack.
+      - schedule:
+          rate: cron(0 6 * * ? *)
+          enabled: true
